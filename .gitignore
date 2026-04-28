@@ -1,6 +1,31 @@
-.claude
-logs/
-tmp/
-cache/
+# Claude
+.claude/
+
+# Python
 venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.env.*
+
+# Dati e output simulazioni
+out/
+cache/
+
+# Log
+logs/
+
+# pygeoapi generato
+pygeoapi-openapi.yml
+
+# Frontend
 frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# macOS
+.DS_Store
+
+# Template esterni (clonati, non nostri)
+tmp/
