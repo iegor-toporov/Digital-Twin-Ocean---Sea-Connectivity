@@ -1,4 +1,5 @@
 import { MODEL_STYLES } from '../constants'
+import { useLang } from '../LanguageContext'
 import './AnimationControls.css'
 
 export default function AnimationControls({
@@ -12,14 +13,16 @@ export default function AnimationControls({
   showSeedShape,
   onToggleSeedShape,
 }) {
+  const { t } = useLang()
   if (!simData) return null
 
   const nSteps = simData.times.length
   const style  = MODEL_STYLES[simData.model] ?? MODEL_STYLES.OceanDrift
+  const locale = t.controls.locale
 
   const d    = new Date(simData.times[currentStep])
-  const date = d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' })
-  const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+  const date = d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' })
+  const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
   const label = `${date} ${time}  (${currentStep + 1}/${nSteps})`
 
   return (
@@ -43,11 +46,11 @@ export default function AnimationControls({
         className="model-badge"
         style={{ background: style.badge, color: style.fill }}
       >
-        {style.label}
+        {t.modelLabels[simData.model] ?? style.label}
       </span>
 
       <div className="speed-group">
-        <span>vel</span>
+        <span>{t.controls.speed}</span>
         <input
           className="speed-slider"
           type="range"
@@ -61,7 +64,7 @@ export default function AnimationControls({
       <button
         className={`seed-toggle-btn${showSeedShape ? ' active' : ''}`}
         onClick={onToggleSeedShape}
-        title={showSeedShape ? 'Nascondi area di seeding' : 'Mostra area di seeding'}
+        title={showSeedShape ? t.controls.hideSeed : t.controls.showSeed}
       >
         ◯
       </button>

@@ -14,12 +14,39 @@
   overflow-y: auto;
 }
 
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
 .panel h2 {
   font-size: 15px;
   font-weight: 700;
   color: #7dd3fc;
   letter-spacing: 0.02em;
-  margin-bottom: 16px;
+  margin-bottom: 0;
+}
+
+.lang-btn {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  transition: all 0.18s;
+  flex-shrink: 0;
+}
+
+.lang-btn:hover {
+  border-color: #0ea5e9;
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.1);
 }
 
 .section-label {
@@ -37,6 +64,8 @@
   gap: 7px;
   margin-bottom: 16px;
 }
+
+
 
 .form-row {
   margin-top: 11px;

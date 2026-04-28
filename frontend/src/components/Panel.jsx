@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { MODELS, defaultStartTime } from '../constants'
+import { useLang } from '../LanguageContext'
 import ModelCard from './ModelCard'
 import './Panel.css'
 
-function formatSeedShape(s) {
+function formatSeedShape(s, lang) {
   if (!s) return null
   if (s.type === 'circle') {
     const km = (s.radius / 1000).toFixed(1)
@@ -13,6 +14,7 @@ function formatSeedShape(s) {
 }
 
 export default function Panel({ onRun, loading, status, statusType, drawMode, onStartDraw, seedShape }) {
+  const { lang, t, toggle } = useLang()
   const [selectedModel, setSelectedModel] = useState('OceanDrift')
   const [startTime, setStartTime] = useState(defaultStartTime())
   const [number,    setNumber]    = useState('100')
@@ -28,68 +30,74 @@ export default function Panel({ onRun, loading, status, statusType, drawMode, on
     })
   }
 
-  const seedInfo = formatSeedShape(seedShape)
+  const seedInfo = formatSeedShape(seedShape, lang)
+  const p = t.panel
 
   return (
     <div className="panel">
-      <h2>OpenDrift Simulation</h2>
+      <div className="panel-header">
+        <h2>{p.title}</h2>
+        <button className="lang-btn" onClick={toggle} title="Switch language">
+          {lang === 'it' ? 'EN' : 'IT'}
+        </button>
+      </div>
 
-      <div className="section-label">Modello di deriva</div>
+      <div className="section-label">{p.sectionModel}</div>
       <div className="model-grid">
         {MODELS.map(m => (
           <ModelCard
             key={m.key}
-            model={m}
+            model={{ ...m, name: t.models[m.key].name, desc: t.models[m.key].desc }}
             active={selectedModel === m.key}
             onClick={() => setSelectedModel(m.key)}
           />
         ))}
       </div>
 
-      <div className="section-label" style={{ marginTop: 14 }}>Area di seeding</div>
+      <div className="section-label" style={{ marginTop: 14 }}>{p.sectionSeed}</div>
       <div className="draw-buttons">
         <button
           className={`draw-btn${drawMode === 'circle' ? ' active' : ''}`}
           type="button"
           onClick={() => onStartDraw('circle')}
         >
-          ◯ Cerchio
+          {p.btnCircle}
         </button>
         <button
           className={`draw-btn${drawMode === 'rectangle' ? ' active' : ''}`}
           type="button"
           onClick={() => onStartDraw('rectangle')}
         >
-          ▭ Rettangolo
+          {p.btnRect}
         </button>
       </div>
 
-      {drawMode === 'circle'    && <div className="draw-hint">Clicca per il centro, poi di nuovo per il raggio</div>}
-      {drawMode === 'rectangle' && <div className="draw-hint">Clicca e trascina per disegnare</div>}
+      {drawMode === 'circle'    && <div className="draw-hint">{p.hintCircle}</div>}
+      {drawMode === 'rectangle' && <div className="draw-hint">{p.hintRect}</div>}
       {!drawMode && seedInfo    && <div className="seed-info">{seedInfo}</div>}
-      {!drawMode && !seedShape  && <div className="draw-hint">Disegna un'area sulla mappa per iniziare</div>}
+      {!drawMode && !seedShape  && <div className="draw-hint">{p.hintNoShape}</div>}
 
       <form onSubmit={handleSubmit}>
         <div className="form-row">
-          <label>Data/ora inizio</label>
+          <label>{p.labelStart}</label>
           <input type="datetime-local" value={startTime}
             onChange={e => setStartTime(e.target.value)} />
         </div>
 
         <div className="form-row">
-          <label>Numero di particelle</label>
+          <label>{p.labelParticles}</label>
           <input type="number" value={number} min="1" max="10000"
             onChange={e => setNumber(e.target.value)} />
         </div>
 
         <div className="form-row">
-          <label>Durata (ore)</label>
+          <label>{p.labelDuration}</label>
           <input type="number" value={duration} min="1" max="720"
             onChange={e => setDuration(e.target.value)} />
         </div>
 
         <button className="run-btn" type="submit" disabled={loading || !seedShape}>
-          {loading ? '⏳ Simulazione in corso…' : '▶ Avvia simulazione'}
+          {loading ? p.btnRunning : p.btnRun}
         </button>
       </form>
 

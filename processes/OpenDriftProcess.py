@@ -47,7 +47,7 @@ AVAILABLE_MODELS = {
         'description': 'Detriti plastici con galleggiabilità, deriva di Stokes e wind drag.',
         'module':      'opendrift.models.plastdrift',
         'class':       'PlastDrift',
-        'needs_wind':  True,   # PlastDrift usa vento per wind drag superficiale
+        'needs_wind':  True,
     },
     'LarvalFish': {
         'label':       'Larve/uova di pesce',
@@ -61,7 +61,7 @@ AVAILABLE_MODELS = {
         'description': 'Sversamento di idrocarburi con evaporazione, emulsione e dispersione.',
         'module':      'opendrift.models.openoil',
         'class':       'OpenOil',
-        'needs_wind':  True,   # OpenOil richiede vento per weathering
+        'needs_wind':  True,
     },
 }
 
@@ -232,6 +232,15 @@ class OpenDriftProcessor(BaseProcessor):
 
             o.run(duration=timedelta(hours=duration_hours), time_step=3600, outfile=nc_output)
             result = _read_trajectories(nc_output)
+        except ValueError as e:
+            logger.error(f'Simulazione fallita: {e}')
+            if 'first timestep' in str(e):
+                raise ProcessorExecuteError(
+                    "La simulazione si è fermata subito: l'area di seeding è "
+                    "interamente su terraferma o fuori dal dominio dei dati CMEMS. "
+                    "Sposta il punto di rilascio in mare aperto."
+                )
+            raise ProcessorExecuteError(str(e))
         except Exception as e:
             logger.error(f'Simulazione fallita: {e}')
             raise
@@ -261,20 +270,18 @@ def _build_model(model_name, model_meta):
     cls    = getattr(module, model_meta['class'])
     o      = cls(loglevel=50)
 
-    # Configurazioni specifiche per modello
     if model_name == 'OpenOil':
-        # weathering semplificato, olio generico di superficie
         try:
             o.set_config('processes:evaporation', True)
             o.set_config('processes:emulsification', True)
             o.set_config('processes:dispersion', False)
         except Exception:
-            pass  # versioni diverse di OpenDrift possono avere config diverse
+            pass
 
     elif model_name == 'PlastDrift':
         try:
             o.set_config('drift:stokes_drift', True)
-            o.set_config('drift:wind_drift_factor', 0.01)  # 1% wind drag
+            o.set_config('drift:wind_drift_factor', 0.01)
         except Exception:
             pass
 
@@ -333,7 +340,8 @@ def _get_wind_file(lon, lat, start_time, end_time):
         return None
 
 
-def _build_bbox(snap_lon, snap_lat, snap_start, n_days, margin=5.0):
+def _build_bbox(snap_lon, snap_lat, snap_start, n_days):
+    margin   = 5.0 + n_days * 0.02
     snap_end = snap_start + timedelta(days=n_days)
     return dict(
         minimum_longitude = snap_lon - margin,
@@ -414,6 +422,7 @@ def _read_trajectories(path):
         units    = time_var.units,
         calendar = getattr(time_var, 'calendar', 'standard'),
     )
+    statuses = ds.variables['status'][:] if 'status' in ds.variables else None
     ds.close()
 
     time_strings = [
@@ -423,15 +432,49 @@ def _read_trajectories(path):
     ]
 
     n_particles, n_time = lons.shape
+    lon_masked = np.ma.getmaskarray(lons)
+
+    # Per ogni particella: trova il momento e la posizione in cui si spiaggia/esce dal dominio
+    strand_t   = [-1]    * n_particles  # -1 = mai spiaggiata
+    strand_lon = [None]  * n_particles
+    strand_lat = [None]  * n_particles
+
+    for p in range(n_particles):
+        for t in range(n_time):
+            if lon_masked[p, t]:
+                # La posizione è diventata masked: cerca l'ultima valida
+                for t2 in range(t - 1, -1, -1):
+                    if not lon_masked[p, t2]:
+                        strand_t[p]   = t
+                        strand_lon[p] = round(float(lons[p, t2]), 6)
+                        strand_lat[p] = round(float(lats[p, t2]), 6)
+                        break
+                break
+            elif statuses is not None:
+                s = statuses[p, t]
+                if not np.ma.is_masked(s) and int(s) != 0:
+                    # Status non-zero: spiaggiata su questa posizione
+                    strand_t[p]   = t
+                    strand_lon[p] = round(float(lons[p, t]), 6)
+                    strand_lat[p] = round(float(lats[p, t]), 6)
+                    break
+
     steps = []
     for t in range(n_time):
         positions = []
         for p in range(n_particles):
-            lon_v, lat_v = lons[p, t], lats[p, t]
-            if np.ma.is_masked(lon_v) or np.ma.is_masked(lat_v):
-                positions.append(None)
+            if not lon_masked[p, t]:
+                pos = [round(float(lons[p, t]), 6), round(float(lats[p, t]), 6)]
+                # Segna come spiaggiata se il flag è scattato a questo step o prima
+                if strand_t[p] != -1 and t >= strand_t[p]:
+                    pos.append(True)
+                positions.append(pos)
             else:
-                positions.append([round(float(lon_v), 6), round(float(lat_v), 6)])
+                # Posizione masked: tieni la particella visibile alla posizione di spiaggiamento
+                if strand_lon[p] is not None:
+                    positions.append([strand_lon[p], strand_lat[p], True])
+                else:
+                    positions.append(None)
         steps.append(positions)
 
     return {'times': time_strings, 'steps': steps}

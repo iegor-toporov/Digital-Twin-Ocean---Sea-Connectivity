@@ -2,17 +2,21 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { MapContainer, TileLayer, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { MODEL_STYLES } from './constants'
+import { useLang } from './LanguageContext'
 import Panel from './components/Panel'
 import SeedDrawer from './components/SeedDrawer'
 import AnimationControls from './components/AnimationControls'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
+const STRANDED_STYLE = { color: '#ef4444', fillColor: '#fca5a5', weight: 2 }
+
 function SimLayer({ simData, currentStep }) {
   const map         = useMap()
   const markersRef  = useRef([])
   const trajsRef    = useRef([])
   const rendererRef = useRef(L.canvas({ padding: 0.5 }))
+  const styleRef    = useRef(MODEL_STYLES.OceanDrift)
 
   useEffect(() => {
     if (!simData) return
@@ -24,6 +28,7 @@ function SimLayer({ simData, currentStep }) {
 
     const { steps } = simData
     const style      = MODEL_STYLES[simData.model] ?? MODEL_STYLES.OceanDrift
+    styleRef.current = style
     const nParticles = steps[0].length
     const nTime      = steps.length
     const renderer   = rendererRef.current
@@ -41,12 +46,17 @@ function SimLayer({ simData, currentStep }) {
     }
 
     for (let p = 0; p < nParticles; p++) {
-      const pos    = steps[0][p]
-      const latlng = pos ? [pos[1], pos[0]] : [0, 0]
-      const marker = L.circleMarker(latlng, {
-        radius: 4, color: style.color, fillColor: style.fill,
-        fillOpacity: pos ? 0.9 : 0, opacity: pos ? 1 : 0,
-        weight: 1, renderer,
+      const pos      = steps[0][p]
+      const latlng   = pos ? [pos[1], pos[0]] : [0, 0]
+      const stranded = pos && pos[2] === true
+      const marker   = L.circleMarker(latlng, {
+        radius:      4,
+        color:       stranded ? STRANDED_STYLE.color     : style.color,
+        fillColor:   stranded ? STRANDED_STYLE.fillColor : style.fill,
+        fillOpacity: pos ? 0.9 : 0,
+        opacity:     pos ? 1   : 0,
+        weight:      stranded ? STRANDED_STYLE.weight    : 1,
+        renderer,
       }).addTo(map)
       markersRef.current.push({ marker, idx: p })
     }
@@ -64,11 +74,19 @@ function SimLayer({ simData, currentStep }) {
   useEffect(() => {
     if (!simData || markersRef.current.length === 0) return
     const positions = simData.steps[currentStep]
+    const style     = styleRef.current
     markersRef.current.forEach(({ marker, idx }) => {
       const pos = positions[idx]
       if (pos) {
+        const stranded = pos[2] === true
         marker.setLatLng([pos[1], pos[0]])
-        marker.setStyle({ fillOpacity: 0.9, opacity: 1 })
+        marker.setStyle({
+          fillOpacity: 0.9,
+          opacity:     1,
+          color:       stranded ? STRANDED_STYLE.color     : style.color,
+          fillColor:   stranded ? STRANDED_STYLE.fillColor : style.fill,
+          weight:      stranded ? STRANDED_STYLE.weight    : 1,
+        })
       } else {
         marker.setStyle({ fillOpacity: 0, opacity: 0 })
       }
@@ -79,6 +97,7 @@ function SimLayer({ simData, currentStep }) {
 }
 
 export default function App() {
+  const { t }                         = useLang()
   const [simData,     setSimData]     = useState(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [isPlaying,   setIsPlaying]   = useState(false)
@@ -130,9 +149,9 @@ export default function App() {
     }
   }
 
-  async function handleRun({ model, start_time, number, duration_hours }) {
+  async function handleRun({ model, start_time, number, duration_hours, compound }) {
     if (!seedShape) {
-      setStatus("Disegna prima un'area di seeding sulla mappa.", 'error')
+      setStatus(t.status.noShape)
       setStatusType('error')
       return
     }
@@ -143,7 +162,7 @@ export default function App() {
           lon_max: seedShape.lon_max, lat_max: seedShape.lat_max }
 
     setLoading(true)
-    setStatus(`Simulazione ${MODEL_STYLES[model]?.label ?? model}… (1-2 min)`)
+    setStatus(t.status.running(t.modelLabels?.[model] ?? model))
     setStatusType('')
     setSimData(null)
     setIsPlaying(false)
@@ -153,27 +172,34 @@ export default function App() {
       const resp = await fetch('/processes/opendrift/execution', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ inputs: { model, start_time, number, duration_hours, ...seedParams } }),
+        body:    JSON.stringify({ inputs: { model, start_time, number, duration_hours, ...seedParams, ...(compound && { compound }) } }),
       })
 
       if (!resp.ok) {
         const text = await resp.text()
-        throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`)
+        let message = t.status.httpError(resp.status)
+        try {
+          const json = JSON.parse(text)
+          if (json.description) message = json.description
+        } catch {
+          message = text.slice(0, 300)
+        }
+        throw new Error(message)
       }
 
       const raw  = await resp.json()
       const data = (raw.steps && raw.times) ? raw : (raw.trajectory ?? raw)
-      if (!data.steps || !data.times) throw new Error('Risposta non valida dal server')
+      if (!data.steps || !data.times) throw new Error(t.status.badResponse)
 
       const nParticles = data.steps[0].filter(Boolean).length
-      setStatus(`${nParticles} particelle · ${data.times.length} passi`)
+      setStatus(t.status.done(nParticles, data.times.length))
       setStatusType('ok')
       setSimData(data)
       setCurrentStep(0)
       setIsPlaying(true)
 
     } catch (err) {
-      setStatus(`Errore: ${err.message}`)
+      setStatus(t.status.error(err.message))
       setStatusType('error')
     } finally {
       setLoading(false)
