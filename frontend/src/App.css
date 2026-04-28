@@ -1,0 +1,5 @@
+/* Evita che i controlli Leaflet vengano oscurati dal panel */
+.leaflet-top.leaflet-left {
+  top: 16px;
+  left: 320px;
+}

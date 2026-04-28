@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 import os
 import uuid
@@ -10,8 +11,21 @@ from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
 _ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR   = os.path.join(_ROOT, 'out')
 CACHE_DIR = os.path.join(_ROOT, 'cache')
+_LOG_DIR  = os.path.join(_ROOT, 'logs')
 os.makedirs(OUT_DIR,   exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(_LOG_DIR,  exist_ok=True)
+
+logger = logging.getLogger('opendrift_process')
+if not logger.handlers:
+    _fh = logging.FileHandler(os.path.join(_LOG_DIR, 'opendrift.log'))
+    _fh.setFormatter(logging.Formatter(
+        '[%(asctime)sZ] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S',
+    ))
+    logger.addHandler(_fh)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
 # ── Dataset CMEMS per correnti (usati da tutti i modelli) ────────────────────
 CMEMS_CURRENT_DATASETS = [
@@ -118,7 +132,7 @@ class OpenDriftProcessor(BaseProcessor):
             raise ProcessorExecuteError('lon and lat are required')
 
         model_name     = data.get('model', 'OceanDrift')
-        number         = min(int(data.get('number', 100)), 500)
+        number         = min(int(data.get('number', 100)), 1000)
         radius         = float(data.get('radius', 1000))
         duration_hours = float(data.get('duration_hours', 24))
 
@@ -143,6 +157,11 @@ class OpenDriftProcessor(BaseProcessor):
         end_time  = start_time + timedelta(hours=duration_hours)
         nc_output = os.path.join(OUT_DIR, f'opendrift_{uuid.uuid4().hex}.nc')
 
+        logger.info(
+            f'Avvio simulazione: model={model_name}, lon={lon}, lat={lat}, '
+            f'start={start_time.isoformat()}, duration={duration_hours}h, particles={number}'
+        )
+
         # Scarica correnti (sempre) + vento se necessario per il modello scelto
         forcing_paths = [_get_forcing_file(lon, lat, start_time, end_time)]
         if model_meta['needs_wind']:
@@ -150,19 +169,27 @@ class OpenDriftProcessor(BaseProcessor):
             if wind_path:
                 forcing_paths.append(wind_path)
 
+        logger.debug(f'Forcing files: {forcing_paths}')
+
         try:
             o = _build_model(model_name, model_meta)
             o.add_readers_from_list(forcing_paths)
             o.seed_elements(lon=lon, lat=lat, number=number, radius=radius, time=start_time)
             o.run(duration=timedelta(hours=duration_hours), time_step=3600, outfile=nc_output)
             result = _read_trajectories(nc_output)
+        except Exception as e:
+            logger.error(f'Simulazione fallita: {e}')
+            raise
         finally:
             try:
                 os.remove(nc_output)
             except OSError:
                 pass
 
-        # Aggiungiamo il nome del modello nella risposta per il frontend
+        logger.info(
+            f'Simulazione completata: model={model_name}, '
+            f'steps={len(result["times"])}, particles={len(result["steps"][0])}'
+        )
         result['model'] = model_name
         return 'application/json', result
 
@@ -173,8 +200,8 @@ class OpenDriftProcessor(BaseProcessor):
 # ── Model factory ────────────────────────────────────────────────────────────
 
 def _build_model(model_name, model_meta):
-    """Importa dinamicamente la classe e restituisce un'istanza configurata."""
     import importlib
+    logger.debug(f'Inizializzazione modello: {model_name}')
     module = importlib.import_module(model_meta['module'])
     cls    = getattr(module, model_meta['class'])
     o      = cls(loglevel=50)
@@ -227,23 +254,27 @@ def _get_forcing_file(lon, lat, start_time, end_time):
     cache_path, snap_lon, snap_lat, snap_start, n_days = _cache_key(
         lon, lat, start_time, end_time, suffix='cur'
     )
-    if not os.path.exists(cache_path):
+    if os.path.exists(cache_path):
+        logger.debug(f'Cache correnti: HIT — {os.path.basename(cache_path)}')
+    else:
+        logger.info(f'Cache correnti: MISS — avvio download ({n_days} giorni)')
         _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path)
     return cache_path
 
 
 def _get_wind_file(lon, lat, start_time, end_time):
-    """Scarica vento ERA5/CMEMS atmosferico se disponibile, altrimenti None."""
     cache_path, snap_lon, snap_lat, snap_start, n_days = _cache_key(
         lon, lat, start_time, end_time, suffix='wind'
     )
     if os.path.exists(cache_path):
+        logger.debug(f'Cache vento: HIT — {os.path.basename(cache_path)}')
         return cache_path
+    logger.info(f'Cache vento: MISS — avvio download ({n_days} giorni)')
     try:
         _download_wind(snap_lon, snap_lat, snap_start, n_days, cache_path)
         return cache_path
-    except Exception:
-        # Il vento non è strettamente necessario: OpenDrift usa fallback=0
+    except Exception as e:
+        logger.warning(f'Download vento fallito (non bloccante): {e}')
         return None
 
 
@@ -260,11 +291,11 @@ def _build_bbox(snap_lon, snap_lat, snap_start, n_days, margin=5.0):
         end_datetime      = snap_end.strftime('%Y-%m-%dT%H:%M:%S'),
     )
 
-
 def _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path):
     import copernicusmarine
-    bbox      = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
-    last_err  = None
+    logger.info(f'Download correnti CMEMS — {snap_start.date()} +{n_days}d → {os.path.basename(cache_path)}')
+    bbox     = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
+    last_err = None
     for ds in CMEMS_CURRENT_DATASETS:
         try:
             copernicusmarine.subset(
@@ -275,17 +306,19 @@ def _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path):
                 overwrite        = True,
                 **bbox,
             )
+            logger.info(f"Dataset correnti scaricato: {ds['dataset_id']}")
             return
         except Exception as e:
+            logger.warning(f"Dataset correnti fallito: {ds['dataset_id']} — {e}")
             last_err = e
+    logger.error(f'Tutti i dataset correnti hanno fallito. Ultimo errore: {last_err}')
     raise ProcessorExecuteError(f'CMEMS currents download failed: {last_err}')
 
 
 def _download_wind(snap_lon, snap_lat, snap_start, n_days, cache_path):
-    """Tenta di scaricare vento da CMEMS (dataset atmosferico ERA5-based)."""
     import copernicusmarine
+    logger.info(f'Download vento CMEMS — {snap_start.date()} +{n_days}d → {os.path.basename(cache_path)}')
     bbox = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
-    # Rimuovi depth dal bbox: il vento è 2D
     bbox.pop('minimum_depth', None)
     bbox.pop('maximum_depth', None)
 
@@ -305,9 +338,10 @@ def _download_wind(snap_lon, snap_lat, snap_start, n_days, cache_path):
                 overwrite        = True,
                 **bbox,
             )
+            logger.info(f"Dataset vento scaricato: {ds['dataset_id']}")
             return
-        except Exception:
-            continue
+        except Exception as e:
+            logger.warning(f"Dataset vento fallito: {ds['dataset_id']} — {e}")
     raise RuntimeError('Wind dataset not available')
 
 

@@ -3,3 +3,4 @@ logs/
 tmp/
 cache/
 venv/
+frontend/node_modules/
