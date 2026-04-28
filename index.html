@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenDrift — Simulazione traiettorie</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      height: 100vh; overflow: hidden;
+    }
+    #map { position: absolute; inset: 0; }
+
+    /* ── Left panel ── */
+    #panel {
+      position: absolute; top: 16px; left: 16px; z-index: 1000;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148,163,184,0.15);
+      border-radius: 14px; padding: 20px 18px; width: 290px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+    }
+    #panel h2 {
+      font-size: 15px; font-weight: 700; color: #7dd3fc;
+      letter-spacing: 0.02em; margin-bottom: 16px;
+    }
+
+    /* ── Model selector ── */
+    .section-label {
+      font-size: 11px; font-weight: 600; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .model-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 7px;
+      margin-bottom: 16px;
+    }
+    .model-card {
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 8px; padding: 9px 10px;
+      cursor: pointer; transition: all 0.18s;
+      background: rgba(255,255,255,0.04);
+    }
+    .model-card:hover { background: rgba(14,165,233,0.12); border-color: #0ea5e9; }
+    .model-card.active {
+      background: rgba(14,165,233,0.2);
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 1px #38bdf8 inset;
+    }
+    .model-card .icon { font-size: 20px; margin-bottom: 4px; }
+    .model-card .name {
+      font-size: 11px; font-weight: 700; color: #e2e8f0;
+      line-height: 1.2; margin-bottom: 2px;
+    }
+    .model-card .desc {
+      font-size: 10px; color: #64748b; line-height: 1.3;
+    }
+
+    /* ── Form ── */
+    .form-row { margin-top: 11px; }
+    .form-row label {
+      display: block; font-size: 11px; font-weight: 600; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px;
+    }
+    .form-row input {
+      width: 100%; padding: 8px 10px; border-radius: 7px;
+      border: 1px solid rgba(148,163,184,0.2);
+      background: rgba(255,255,255,0.06); color: #f1f5f9;
+      font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    .form-row input:focus { border-color: #0ea5e9; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+
+    #run-btn {
+      width: 100%; margin-top: 16px; padding: 11px;
+      background: #0ea5e9; border: none; border-radius: 8px;
+      color: white; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: background 0.2s, opacity 0.2s;
+    }
+    #run-btn:hover:not(:disabled) { background: #38bdf8; }
+    #run-btn:disabled { background: #1e3a4a; color: #475569; cursor: not-allowed; }
+
+    #status {
+      margin-top: 10px; font-size: 12px; color: #64748b;
+      text-align: center; min-height: 16px; line-height: 1.4;
+    }
+    #status.error { color: #f87171; }
+    #status.ok    { color: #4ade80; }
+
+    /* ── Bottom controls ── */
+    #controls {
+      position: absolute; bottom: 20px; left: 50%;
+      transform: translateX(-50%); z-index: 1000;
+      background: rgba(15,23,42,0.92);
+      border: 1px solid rgba(148,163,184,0.15);
+      border-radius: 14px; padding: 12px 20px;
+      display: none; align-items: center; gap: 14px;
+      min-width: 560px; backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    #play-btn {
+      width: 38px; height: 38px; border-radius: 50%;
+      background: #0ea5e9; border: none; color: white;
+      font-size: 15px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: background 0.2s;
+    }
+    #play-btn:hover { background: #38bdf8; }
+    #time-slider {
+      flex: 1; cursor: pointer; accent-color: #0ea5e9; height: 4px;
+    }
+    #time-label {
+      font-size: 12px; color: #94a3b8; white-space: nowrap;
+      flex-shrink: 0; min-width: 160px; text-align: right;
+    }
+    .speed-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .speed-group span { font-size: 11px; color: #64748b; }
+    #speed-slider { width: 60px; accent-color: #0ea5e9; cursor: pointer; }
+
+    /* ── Model badge in controls ── */
+    #model-badge {
+      font-size: 11px; font-weight: 700; padding: 3px 9px;
+      border-radius: 20px; flex-shrink: 0; letter-spacing: 0.03em;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="panel">
+  <h2>OpenDrift Simulation</h2>
+
+  <!-- Model selector -->
+  <div class="section-label">Modello di deriva</div>
+  <div class="model-grid">
+    <div class="model-card active" data-model="OceanDrift" onclick="selectModel(this)">
+      <div class="icon">🌊</div>
+      <div class="name">Tracciante</div>
+      <div class="desc">Correnti superficiali</div>
+    </div>
+    <div class="model-card" data-model="PlastDrift" onclick="selectModel(this)">
+      <div class="icon">🧴</div>
+      <div class="name">Plastica</div>
+      <div class="desc">Con wind drag e Stokes</div>
+    </div>
+    <div class="model-card" data-model="LarvalFish" onclick="selectModel(this)">
+      <div class="icon">🐟</div>
+      <div class="name">Larve/uova</div>
+      <div class="desc">Galleggiabilità verticale</div>
+    </div>
+    <div class="model-card" data-model="OpenOil" onclick="selectModel(this)">
+      <div class="icon">🛢️</div>
+      <div class="name">Idrocarburi</div>
+      <div class="desc">Evaporazione ed emulsione</div>
+    </div>
+  </div>
+
+  <!-- Coords -->
+  <div class="form-grid">
+    <div class="form-row">
+      <label>Longitudine</label>
+      <input type="number" id="lon" value="12.5" step="0.01">
+    </div>
+    <div class="form-row">
+      <label>Latitudine</label>
+      <input type="number" id="lat" value="44.0" step="0.01">
+    </div>
+  </div>
+
+  <div class="form-row">
+    <label>Data/ora inizio</label>
+    <input type="datetime-local" id="start_time">
+  </div>
+
+  <div class="form-row">
+    <label>Numero di particelle</label>
+    <input type="number" id="number" value="100" min="1" max="500">
+  </div>
+
+  <div class="form-grid">
+    <div class="form-row">
+      <label>Raggio seed (m)</label>
+      <input type="number" id="radius" value="1000" min="100">
+    </div>
+    <div class="form-row">
+      <label>Durata (ore)</label>
+      <input type="number" id="duration" value="24" min="1" max="720">
+    </div>
+  </div>
+
+  <button id="run-btn" onclick="runSimulation()">▶ Avvia simulazione</button>
+  <div id="status"></div>
+</div>
+
+<!-- Animation controls -->
+<div id="controls">
+  <button id="play-btn" onclick="togglePlay()">▶</button>
+  <input type="range" id="time-slider" min="0" value="0" oninput="onSliderChange(this.value)">
+  <span id="time-label">—</span>
+  <span id="model-badge"></span>
+  <div class="speed-group">
+    <span>vel</span>
+    <input type="range" id="speed-slider" min="1" max="20" value="5">
+  </div>
+</div>
+
+<script>
+const API_BASE = 'http://localhost:5001';
+
+// Colori e stile per ogni modello
+const MODEL_STYLES = {
+  OceanDrift: { color: '#0ea5e9', fill: '#7dd3fc', traj: '#38bdf8', badge: '#0c4a6e', label: '🌊 Tracciante' },
+  PlastDrift: { color: '#f59e0b', fill: '#fde68a', traj: '#fbbf24', badge: '#451a03', label: '🧴 Plastica'   },
+  LarvalFish: { color: '#22c55e', fill: '#86efac', traj: '#4ade80', badge: '#052e16', label: '🐟 Larve'      },
+  OpenOil:    { color: '#ef4444', fill: '#fca5a5', traj: '#f87171', badge: '#450a0a', label: '🛢️ Petrolio'   },
+};
+
+let selectedModel = 'OceanDrift';
+
+function selectModel(card) {
+  document.querySelectorAll('.model-card').forEach(c => c.classList.remove('active'));
+  card.classList.add('active');
+  selectedModel = card.dataset.model;
+}
+
+// Default start_time: 3 giorni fa
+(function setDefaultStartTime() {
+  const d = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  d.setMinutes(0, 0, 0);
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('start_time').value =
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`;
+})();
+
+// Mappa
+const map = L.map('map', { zoomControl: true }).setView([44, 12.5], 7);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap · © CARTO',
+  subdomains: 'abcd', maxZoom: 19
+}).addTo(map);
+
+// Stato
+let simData     = null;
+let currentStep = 0;
+let isPlaying   = false;
+let animTimer   = null;
+let markers     = [];
+let trajLines   = [];
+const renderer  = L.canvas({ padding: 0.5 });
+
+function setStatus(msg, type = '') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = type;
+}
+
+function clearLayers() {
+  markers.forEach(({ marker }) => marker.remove());
+  trajLines.forEach(l => l.remove());
+  markers = []; trajLines = [];
+}
+
+async function runSimulation() {
+  const lon            = parseFloat(document.getElementById('lon').value);
+  const lat            = parseFloat(document.getElementById('lat').value);
+  const number         = parseInt(document.getElementById('number').value);
+  const radius         = parseFloat(document.getElementById('radius').value);
+  const duration_hours = parseFloat(document.getElementById('duration').value);
+  const start_time_raw = document.getElementById('start_time').value;
+  const start_time     = start_time_raw ? start_time_raw + ':00' : undefined;
+
+  if (isNaN(lon) || isNaN(lat)) { setStatus('Inserisci lon e lat validi.', 'error'); return; }
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  setStatus(`Simulazione ${MODEL_STYLES[selectedModel].label}… (1-2 min)`);
+  stopAnimation();
+  clearLayers();
+  document.getElementById('controls').style.display = 'none';
+
+  try {
+    const resp = await fetch(`${API_BASE}/processes/opendrift/execution`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        inputs: {
+          lon, lat, number, radius, duration_hours,
+          model: selectedModel,
+          ...(start_time && { start_time })
+        }
+      })
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`);
+    }
+
+    const raw = await resp.json();
+    simData = (raw.steps && raw.times) ? raw : (raw.trajectory ?? raw);
+    if (!simData.steps || !simData.times) throw new Error('Risposta non valida dal server');
+
+    const nParticles = simData.steps[0].filter(Boolean).length;
+    const nSteps     = simData.times.length;
+    setStatus(`${nParticles} particelle · ${nSteps} passi`, 'ok');
+    initVisualization();
+
+  } catch (err) {
+    setStatus(`Errore: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initVisualization() {
+  const { steps, times } = simData;
+  const style      = MODEL_STYLES[simData.model || selectedModel];
+  const nParticles = steps[0].length;
+  const nTime      = steps.length;
+
+  // Traiettorie statiche
+  for (let p = 0; p < nParticles; p++) {
+    const coords = [];
+    for (let t = 0; t < nTime; t++) {
+      const pos = steps[t][p];
+      if (pos) coords.push([pos[1], pos[0]]);
+    }
+    if (coords.length > 1)
+      trajLines.push(L.polyline(coords, {
+        color: style.traj, opacity: 0.18, weight: 1, renderer
+      }).addTo(map));
+  }
+
+  // Marcatori
+  for (let p = 0; p < nParticles; p++) {
+    const pos    = steps[0][p];
+    const latlng = pos ? [pos[1], pos[0]] : [0, 0];
+    const marker = L.circleMarker(latlng, {
+      radius: 4, color: style.color, fillColor: style.fill,
+      fillOpacity: pos ? 0.9 : 0, opacity: pos ? 1 : 0,
+      weight: 1, renderer
+    }).addTo(map);
+    markers.push({ marker, idx: p });
+  }
+
+  // Badge modello nella barra controlli
+  const badge = document.getElementById('model-badge');
+  badge.textContent = style.label;
+  badge.style.background = style.badge;
+  badge.style.color = style.fill;
+
+  // Slider
+  const slider   = document.getElementById('time-slider');
+  slider.max     = nTime - 1;
+  slider.value   = 0;
+  currentStep    = 0;
+  updateTimeLabel(0);
+  document.getElementById('controls').style.display = 'flex';
+
+  const allCoords = steps.flat().filter(Boolean).map(p => [p[1], p[0]]);
+  if (allCoords.length > 0)
+    map.fitBounds(L.latLngBounds(allCoords), { padding: [50, 50] });
+
+  startAnimation();
+}
+
+function goToStep(step) {
+  currentStep     = Math.max(0, Math.min(step, simData.steps.length - 1));
+  const positions = simData.steps[currentStep];
+  markers.forEach(({ marker, idx }) => {
+    const pos = positions[idx];
+    if (pos) { marker.setLatLng([pos[1], pos[0]]); marker.setStyle({ fillOpacity: 0.9, opacity: 1 }); }
+    else       marker.setStyle({ fillOpacity: 0, opacity: 0 });
+  });
+  document.getElementById('time-slider').value = currentStep;
+  updateTimeLabel(currentStep);
+}
+
+function updateTimeLabel(step) {
+  const d    = new Date(simData.times[step]);
+  const date = d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  document.getElementById('time-label').textContent = `${date} ${time}  (${step + 1}/${simData.times.length})`;
+}
+
+function togglePlay() { isPlaying ? stopAnimation() : startAnimation(); }
+
+function startAnimation() {
+  if (currentStep >= simData.steps.length - 1) currentStep = 0;
+  isPlaying = true;
+  document.getElementById('play-btn').textContent = '⏸';
+  tick();
+}
+
+function tick() {
+  if (!isPlaying) return;
+  goToStep(currentStep);
+  if (currentStep < simData.steps.length - 1) {
+    currentStep++;
+    const fps = parseInt(document.getElementById('speed-slider').value);
+    animTimer = setTimeout(tick, Math.max(40, 1000 / fps));
+  } else {
+    stopAnimation();
+  }
+}
+
+function stopAnimation() {
+  isPlaying = false;
+  document.getElementById('play-btn').textContent = '▶';
+  clearTimeout(animTimer);
+  animTimer = null;
+}
+
+function onSliderChange(val) { stopAnimation(); goToStep(parseInt(val)); }
+</script>
+</body>
+</html>

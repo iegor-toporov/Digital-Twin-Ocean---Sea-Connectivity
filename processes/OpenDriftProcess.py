@@ -1,0 +1,348 @@
+import hashlib
+import math
+import os
+import uuid
+import numpy as np
+from datetime import datetime, timedelta
+
+from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
+
+_ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT_DIR   = os.path.join(_ROOT, 'out')
+CACHE_DIR = os.path.join(_ROOT, 'cache')
+os.makedirs(OUT_DIR,   exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ── Dataset CMEMS per correnti (usati da tutti i modelli) ────────────────────
+CMEMS_CURRENT_DATASETS = [
+    {'dataset_id': 'cmems_mod_med_phy-cur_anfc_0.042deg_PT1H-m', 'variables': ['uo', 'vo']},
+    {'dataset_id': 'cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m',  'variables': ['uo', 'vo']},
+]
+
+# ── Modelli disponibili con metadati UI ──────────────────────────────────────
+AVAILABLE_MODELS = {
+    'OceanDrift': {
+        'label':       'Tracciante passivo',
+        'description': 'Particelle passive trasportate solo dalle correnti superficiali.',
+        'module':      'opendrift.models.oceandrift',
+        'class':       'OceanDrift',
+        'needs_wind':  False,
+    },
+    'PlastDrift': {
+        'label':       'Plastica',
+        'description': 'Detriti plastici con galleggiabilità, deriva di Stokes e wind drag.',
+        'module':      'opendrift.models.plastdrift',
+        'class':       'PlastDrift',
+        'needs_wind':  True,   # PlastDrift usa vento per wind drag superficiale
+    },
+    'LarvalFish': {
+        'label':       'Larve/uova di pesce',
+        'description': 'Larve e uova di pesce con galleggiabilità verticale e mixing turbolento.',
+        'module':      'opendrift.models.larvalfish',
+        'class':       'LarvalFish',
+        'needs_wind':  False,
+    },
+    'OpenOil': {
+        'label':       'Idrocarburi (petrolio)',
+        'description': 'Sversamento di idrocarburi con evaporazione, emulsione e dispersione.',
+        'module':      'opendrift.models.openoil',
+        'class':       'OpenOil',
+        'needs_wind':  True,   # OpenOil richiede vento per weathering
+    },
+}
+
+PROCESS_METADATA = {
+    'version': '0.5.0',
+    'id': 'opendrift',
+    'title': {'en': 'OpenDrift Simulation'},
+    'description': {'en': 'Lagrangian particle tracking with real CMEMS ocean currents.'},
+    'jobControlOptions': ['sync-execute', 'async-execute'],
+    'keywords': ['opendrift', 'drift', 'particles', 'ocean', 'cmems'],
+    'inputs': {
+        'lon': {
+            'title': 'Longitude',
+            'schema': {'type': 'number'},
+            'minOccurs': 1, 'maxOccurs': 1,
+        },
+        'lat': {
+            'title': 'Latitude',
+            'schema': {'type': 'number'},
+            'minOccurs': 1, 'maxOccurs': 1,
+        },
+        'model': {
+            'title': 'Drift model',
+            'description': f'One of: {", ".join(AVAILABLE_MODELS.keys())}. Default: OceanDrift.',
+            'schema': {'type': 'string', 'default': 'OceanDrift'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'start_time': {
+            'title': 'Start time',
+            'description': 'ISO 8601 datetime. Defaults to 3 days ago.',
+            'schema': {'type': 'string'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'number': {
+            'title': 'Number of particles',
+            'schema': {'type': 'integer', 'default': 100},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'radius': {
+            'title': 'Seed radius (m)',
+            'schema': {'type': 'number', 'default': 1000},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'duration_hours': {
+            'title': 'Duration (hours)',
+            'schema': {'type': 'number', 'default': 24},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+    },
+    'outputs': {
+        'trajectory': {
+            'title': 'Trajectory data',
+            'schema': {'type': 'object', 'contentMediaType': 'application/json'},
+        }
+    },
+}
+
+
+class OpenDriftProcessor(BaseProcessor):
+
+    def __init__(self, processor_def):
+        super().__init__(processor_def, PROCESS_METADATA)
+
+    def execute(self, data):
+        lon = data.get('lon')
+        lat = data.get('lat')
+        if lon is None or lat is None:
+            raise ProcessorExecuteError('lon and lat are required')
+
+        model_name     = data.get('model', 'OceanDrift')
+        number         = min(int(data.get('number', 100)), 500)
+        radius         = float(data.get('radius', 1000))
+        duration_hours = float(data.get('duration_hours', 24))
+
+        if model_name not in AVAILABLE_MODELS:
+            raise ProcessorExecuteError(
+                f'Unknown model "{model_name}". '
+                f'Available: {", ".join(AVAILABLE_MODELS.keys())}'
+            )
+        model_meta = AVAILABLE_MODELS[model_name]
+
+        start_time_str = data.get('start_time')
+        if start_time_str:
+            try:
+                start_time = datetime.fromisoformat(start_time_str)
+            except ValueError:
+                raise ProcessorExecuteError(
+                    f'Invalid start_time: {start_time_str!r}. Use ISO 8601.'
+                )
+        else:
+            start_time = datetime.utcnow() - timedelta(days=3)
+
+        end_time  = start_time + timedelta(hours=duration_hours)
+        nc_output = os.path.join(OUT_DIR, f'opendrift_{uuid.uuid4().hex}.nc')
+
+        # Scarica correnti (sempre) + vento se necessario per il modello scelto
+        forcing_paths = [_get_forcing_file(lon, lat, start_time, end_time)]
+        if model_meta['needs_wind']:
+            wind_path = _get_wind_file(lon, lat, start_time, end_time)
+            if wind_path:
+                forcing_paths.append(wind_path)
+
+        try:
+            o = _build_model(model_name, model_meta)
+            o.add_readers_from_list(forcing_paths)
+            o.seed_elements(lon=lon, lat=lat, number=number, radius=radius, time=start_time)
+            o.run(duration=timedelta(hours=duration_hours), time_step=3600, outfile=nc_output)
+            result = _read_trajectories(nc_output)
+        finally:
+            try:
+                os.remove(nc_output)
+            except OSError:
+                pass
+
+        # Aggiungiamo il nome del modello nella risposta per il frontend
+        result['model'] = model_name
+        return 'application/json', result
+
+    def __repr__(self):
+        return '<OpenDriftProcessor>'
+
+
+# ── Model factory ────────────────────────────────────────────────────────────
+
+def _build_model(model_name, model_meta):
+    """Importa dinamicamente la classe e restituisce un'istanza configurata."""
+    import importlib
+    module = importlib.import_module(model_meta['module'])
+    cls    = getattr(module, model_meta['class'])
+    o      = cls(loglevel=50)
+
+    # Configurazioni specifiche per modello
+    if model_name == 'OpenOil':
+        # weathering semplificato, olio generico di superficie
+        try:
+            o.set_config('processes:evaporation', True)
+            o.set_config('processes:emulsification', True)
+            o.set_config('processes:dispersion', False)
+        except Exception:
+            pass  # versioni diverse di OpenDrift possono avere config diverse
+
+    elif model_name == 'PlastDrift':
+        try:
+            o.set_config('drift:stokes_drift', True)
+            o.set_config('drift:wind_drift_factor', 0.01)  # 1% wind drag
+        except Exception:
+            pass
+
+    elif model_name == 'LarvalFish':
+        try:
+            o.set_config('drift:vertical_mixing', True)
+        except Exception:
+            pass
+
+    return o
+
+
+# ── Cache helpers — correnti ─────────────────────────────────────────────────
+
+def _cache_key(lon, lat, start_time, end_time, suffix='cur'):
+    snap_lon   = round(lon)
+    snap_lat   = round(lat)
+    snap_start = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    n_days     = math.ceil((end_time - snap_start).total_seconds() / 86400) + 1
+
+    raw    = f'{snap_lon}|{snap_lat}|{snap_start.strftime("%Y%m%d")}|{n_days}|{suffix}'
+    digest = hashlib.md5(raw.encode()).hexdigest()[:8]
+    label  = f'{snap_lon:+03d}_{snap_lat:+03d}_{snap_start.strftime("%Y%m%d")}_{n_days}d_{suffix}'
+
+    return (
+        os.path.join(CACHE_DIR, f'cmems_{label}_{digest}.nc'),
+        snap_lon, snap_lat, snap_start, n_days,
+    )
+
+
+def _get_forcing_file(lon, lat, start_time, end_time):
+    cache_path, snap_lon, snap_lat, snap_start, n_days = _cache_key(
+        lon, lat, start_time, end_time, suffix='cur'
+    )
+    if not os.path.exists(cache_path):
+        _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path)
+    return cache_path
+
+
+def _get_wind_file(lon, lat, start_time, end_time):
+    """Scarica vento ERA5/CMEMS atmosferico se disponibile, altrimenti None."""
+    cache_path, snap_lon, snap_lat, snap_start, n_days = _cache_key(
+        lon, lat, start_time, end_time, suffix='wind'
+    )
+    if os.path.exists(cache_path):
+        return cache_path
+    try:
+        _download_wind(snap_lon, snap_lat, snap_start, n_days, cache_path)
+        return cache_path
+    except Exception:
+        # Il vento non è strettamente necessario: OpenDrift usa fallback=0
+        return None
+
+
+def _build_bbox(snap_lon, snap_lat, snap_start, n_days, margin=5.0):
+    snap_end = snap_start + timedelta(days=n_days)
+    return dict(
+        minimum_longitude = snap_lon - margin,
+        maximum_longitude = snap_lon + margin,
+        minimum_latitude  = snap_lat - margin,
+        maximum_latitude  = snap_lat + margin,
+        minimum_depth     = 0,
+        maximum_depth     = 0.5,
+        start_datetime    = snap_start.strftime('%Y-%m-%dT%H:%M:%S'),
+        end_datetime      = snap_end.strftime('%Y-%m-%dT%H:%M:%S'),
+    )
+
+
+def _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path):
+    import copernicusmarine
+    bbox      = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
+    last_err  = None
+    for ds in CMEMS_CURRENT_DATASETS:
+        try:
+            copernicusmarine.subset(
+                dataset_id       = ds['dataset_id'],
+                variables        = ds['variables'],
+                output_filename  = os.path.basename(cache_path),
+                output_directory = CACHE_DIR,
+                overwrite        = True,
+                **bbox,
+            )
+            return
+        except Exception as e:
+            last_err = e
+    raise ProcessorExecuteError(f'CMEMS currents download failed: {last_err}')
+
+
+def _download_wind(snap_lon, snap_lat, snap_start, n_days, cache_path):
+    """Tenta di scaricare vento da CMEMS (dataset atmosferico ERA5-based)."""
+    import copernicusmarine
+    bbox = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
+    # Rimuovi depth dal bbox: il vento è 2D
+    bbox.pop('minimum_depth', None)
+    bbox.pop('maximum_depth', None)
+
+    WIND_DATASETS = [
+        {'dataset_id': 'cmems_obs-wind_med_phy_nrt_l4_0.125deg_PT1H',
+         'variables': ['eastward_wind', 'northward_wind']},
+        {'dataset_id': 'cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H',
+         'variables': ['eastward_wind', 'northward_wind']},
+    ]
+    for ds in WIND_DATASETS:
+        try:
+            copernicusmarine.subset(
+                dataset_id       = ds['dataset_id'],
+                variables        = ds['variables'],
+                output_filename  = os.path.basename(cache_path),
+                output_directory = CACHE_DIR,
+                overwrite        = True,
+                **bbox,
+            )
+            return
+        except Exception:
+            continue
+    raise RuntimeError('Wind dataset not available')
+
+
+# ── Trajectory reader ────────────────────────────────────────────────────────
+
+def _read_trajectories(path):
+    import netCDF4 as nc4
+
+    ds       = nc4.Dataset(path)
+    lons     = ds.variables['lon'][:]
+    lats     = ds.variables['lat'][:]
+    time_var = ds.variables['time']
+    raw_times = nc4.num2date(
+        time_var[:],
+        units    = time_var.units,
+        calendar = getattr(time_var, 'calendar', 'standard'),
+    )
+    ds.close()
+
+    time_strings = [
+        f'{t.year:04d}-{t.month:02d}-{t.day:02d}T'
+        f'{t.hour:02d}:{t.minute:02d}:{t.second:02d}'
+        for t in raw_times
+    ]
+
+    n_particles, n_time = lons.shape
+    steps = []
+    for t in range(n_time):
+        positions = []
+        for p in range(n_particles):
+            lon_v, lat_v = lons[p, t], lats[p, t]
+            if np.ma.is_masked(lon_v) or np.ma.is_masked(lat_v):
+                positions.append(None)
+            else:
+                positions.append([round(float(lon_v), 6), round(float(lat_v), 6)])
+        steps.append(positions)
+
+    return {'times': time_strings, 'steps': steps}
