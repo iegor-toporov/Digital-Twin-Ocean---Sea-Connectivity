@@ -87,8 +87,9 @@ export default function App() {
   const [status,      setStatus]      = useState('')
   const [statusType,  setStatusType]  = useState('')
 
-  const [drawMode,  setDrawMode]  = useState(null)
-  const [seedShape, setSeedShape] = useState(null)
+  const [drawMode,       setDrawMode]       = useState(null)
+  const [seedShape,      setSeedShape]      = useState(null)
+  const [showSeedShape,  setShowSeedShape]  = useState(true)
 
   const timerRef = useRef(null)
 
@@ -197,6 +198,7 @@ export default function App() {
         <SeedDrawer
           drawMode={drawMode}
           seedShape={seedShape}
+          showSeedShape={showSeedShape}
           onShapeDone={handleShapeDone}
         />
       </MapContainer>
@@ -220,6 +222,8 @@ export default function App() {
           onSliderChange={step => { setIsPlaying(false); setCurrentStep(step) }}
           speed={speed}
           onSpeedChange={setSpeed}
+          showSeedShape={showSeedShape}
+          onToggleSeedShape={() => setShowSeedShape(v => !v)}
         />
       )}
     </div>

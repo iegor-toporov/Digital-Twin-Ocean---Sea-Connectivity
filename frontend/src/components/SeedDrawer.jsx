@@ -11,7 +11,7 @@ const PREVIEW_STYLE = {
   fillOpacity: 0.10, weight: 2, dashArray: '6 4',
 }
 
-export default function SeedDrawer({ drawMode, seedShape, onShapeDone }) {
+export default function SeedDrawer({ drawMode, seedShape, showSeedShape, onShapeDone }) {
   const map = useMap()
 
   // Refs usati dentro useMapEvents per evitare closure stale
@@ -46,7 +46,7 @@ export default function SeedDrawer({ drawMode, seedShape, onShapeDone }) {
   useEffect(() => {
     if (drawMode) return
     clearLayer()
-    if (!seedShape) return
+    if (!seedShape || !showSeedShape) return
 
     if (seedShape.type === 'circle') {
       layerRef.current = L.circle([seedShape.lat, seedShape.lon], {
@@ -60,7 +60,7 @@ export default function SeedDrawer({ drawMode, seedShape, onShapeDone }) {
     }
 
     return clearLayer
-  }, [drawMode, seedShape, map])
+  }, [drawMode, seedShape, showSeedShape, map])
 
   useMapEvents({
     // ── Cerchio ───────────────────────────────────────────────────────────────

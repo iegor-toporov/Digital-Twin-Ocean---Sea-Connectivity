@@ -9,6 +9,8 @@ export default function AnimationControls({
   onSliderChange,
   speed,
   onSpeedChange,
+  showSeedShape,
+  onToggleSeedShape,
 }) {
   if (!simData) return null
 
@@ -55,6 +57,14 @@ export default function AnimationControls({
           onChange={e => onSpeedChange(parseInt(e.target.value))}
         />
       </div>
+
+      <button
+        className={`seed-toggle-btn${showSeedShape ? ' active' : ''}`}
+        onClick={onToggleSeedShape}
+        title={showSeedShape ? 'Nascondi area di seeding' : 'Mostra area di seeding'}
+      >
+        ◯
+      </button>
     </div>
   )
 }

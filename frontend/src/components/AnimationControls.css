@@ -78,3 +78,30 @@
   accent-color: #0ea5e9;
   cursor: pointer;
 }
+
+.seed-toggle-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: #64748b;
+  font-size: 15px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.18s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.seed-toggle-btn:hover {
+  border-color: #0ea5e9;
+  color: #7dd3fc;
+}
+
+.seed-toggle-btn.active {
+  background: rgba(14, 165, 233, 0.15);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
