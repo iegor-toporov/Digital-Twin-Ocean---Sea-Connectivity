@@ -73,15 +73,46 @@ PROCESS_METADATA = {
     'jobControlOptions': ['sync-execute', 'async-execute'],
     'keywords': ['opendrift', 'drift', 'particles', 'ocean', 'cmems'],
     'inputs': {
+        'seeding_type': {
+            'title': 'Seeding type',
+            'description': '"circle" (default) or "rectangle".',
+            'schema': {'type': 'string', 'default': 'circle'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
         'lon': {
-            'title': 'Longitude',
+            'title': 'Longitude (circle)',
             'schema': {'type': 'number'},
-            'minOccurs': 1, 'maxOccurs': 1,
+            'minOccurs': 0, 'maxOccurs': 1,
         },
         'lat': {
-            'title': 'Latitude',
+            'title': 'Latitude (circle)',
             'schema': {'type': 'number'},
-            'minOccurs': 1, 'maxOccurs': 1,
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'radius': {
+            'title': 'Seed radius in metres (circle)',
+            'schema': {'type': 'number', 'default': 1000},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'lon_min': {
+            'title': 'West longitude (rectangle)',
+            'schema': {'type': 'number'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'lon_max': {
+            'title': 'East longitude (rectangle)',
+            'schema': {'type': 'number'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'lat_min': {
+            'title': 'South latitude (rectangle)',
+            'schema': {'type': 'number'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'lat_max': {
+            'title': 'North latitude (rectangle)',
+            'schema': {'type': 'number'},
+            'minOccurs': 0, 'maxOccurs': 1,
         },
         'model': {
             'title': 'Drift model',
@@ -98,11 +129,6 @@ PROCESS_METADATA = {
         'number': {
             'title': 'Number of particles',
             'schema': {'type': 'integer', 'default': 100},
-            'minOccurs': 0, 'maxOccurs': 1,
-        },
-        'radius': {
-            'title': 'Seed radius (m)',
-            'schema': {'type': 'number', 'default': 1000},
             'minOccurs': 0, 'maxOccurs': 1,
         },
         'duration_hours': {
@@ -126,14 +152,9 @@ class OpenDriftProcessor(BaseProcessor):
         super().__init__(processor_def, PROCESS_METADATA)
 
     def execute(self, data):
-        lon = data.get('lon')
-        lat = data.get('lat')
-        if lon is None or lat is None:
-            raise ProcessorExecuteError('lon and lat are required')
-
+        seeding_type   = data.get('seeding_type', 'circle')
         model_name     = data.get('model', 'OceanDrift')
-        number         = min(int(data.get('number', 100)), 1000)
-        radius         = float(data.get('radius', 1000))
+        number         = min(int(data.get('number', 100)), 10000)
         duration_hours = float(data.get('duration_hours', 24))
 
         if model_name not in AVAILABLE_MODELS:
@@ -157,15 +178,42 @@ class OpenDriftProcessor(BaseProcessor):
         end_time  = start_time + timedelta(hours=duration_hours)
         nc_output = os.path.join(OUT_DIR, f'opendrift_{uuid.uuid4().hex}.nc')
 
-        logger.info(
-            f'Avvio simulazione: model={model_name}, lon={lon}, lat={lat}, '
-            f'start={start_time.isoformat()}, duration={duration_hours}h, particles={number}'
-        )
+        if seeding_type == 'rectangle':
+            try:
+                lon_min = float(data['lon_min'])
+                lon_max = float(data['lon_max'])
+                lat_min = float(data['lat_min'])
+                lat_max = float(data['lat_max'])
+            except (KeyError, ValueError) as e:
+                raise ProcessorExecuteError(
+                    f'Rectangle seeding requires lon_min, lon_max, lat_min, lat_max: {e}'
+                )
+            center_lon = (lon_min + lon_max) / 2
+            center_lat = (lat_min + lat_max) / 2
+            logger.info(
+                f'Avvio simulazione: model={model_name}, seeding=rectangle, '
+                f'bbox=[{lon_min:.3f},{lat_min:.3f} → {lon_max:.3f},{lat_max:.3f}], '
+                f'start={start_time.isoformat()}, duration={duration_hours}h, particles={number}'
+            )
+        else:
+            lon = data.get('lon')
+            lat = data.get('lat')
+            if lon is None or lat is None:
+                raise ProcessorExecuteError('Circle seeding requires lon and lat')
+            lon    = float(lon)
+            lat    = float(lat)
+            radius = float(data.get('radius', 1000))
+            center_lon = lon
+            center_lat = lat
+            logger.info(
+                f'Avvio simulazione: model={model_name}, seeding=circle, '
+                f'lon={lon}, lat={lat}, radius={radius}m, '
+                f'start={start_time.isoformat()}, duration={duration_hours}h, particles={number}'
+            )
 
-        # Scarica correnti (sempre) + vento se necessario per il modello scelto
-        forcing_paths = [_get_forcing_file(lon, lat, start_time, end_time)]
+        forcing_paths = [_get_forcing_file(center_lon, center_lat, start_time, end_time)]
         if model_meta['needs_wind']:
-            wind_path = _get_wind_file(lon, lat, start_time, end_time)
+            wind_path = _get_wind_file(center_lon, center_lat, start_time, end_time)
             if wind_path:
                 forcing_paths.append(wind_path)
 
@@ -174,7 +222,14 @@ class OpenDriftProcessor(BaseProcessor):
         try:
             o = _build_model(model_name, model_meta)
             o.add_readers_from_list(forcing_paths)
-            o.seed_elements(lon=lon, lat=lat, number=number, radius=radius, time=start_time)
+
+            if seeding_type == 'rectangle':
+                lons = np.random.uniform(lon_min, lon_max, number)
+                lats = np.random.uniform(lat_min, lat_max, number)
+                o.seed_elements(lon=lons, lat=lats, number=number, time=start_time)
+            else:
+                o.seed_elements(lon=lon, lat=lat, number=number, radius=radius, radius_type='uniform', time=start_time)
+
             o.run(duration=timedelta(hours=duration_hours), time_step=3600, outfile=nc_output)
             result = _read_trajectories(nc_output)
         except Exception as e:

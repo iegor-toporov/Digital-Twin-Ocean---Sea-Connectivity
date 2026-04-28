@@ -74,6 +74,57 @@
   gap: 0 12px;
 }
 
+.draw-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.draw-btn {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+
+.draw-btn:hover {
+  background: rgba(14, 165, 233, 0.12);
+  border-color: #0ea5e9;
+}
+
+.draw-btn.active {
+  background: rgba(14, 165, 233, 0.25);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+  box-shadow: 0 0 0 1px #38bdf8 inset;
+}
+
+.draw-hint {
+  font-size: 11px;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+.seed-info {
+  font-size: 11px;
+  color: #7dd3fc;
+  text-align: center;
+  margin-bottom: 4px;
+  line-height: 1.4;
+  padding: 5px 8px;
+  background: rgba(14, 165, 233, 0.08);
+  border-radius: 6px;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+}
+
 .run-btn {
   width: 100%;
   margin-top: 16px;

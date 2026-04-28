@@ -3,48 +3,43 @@ import { MapContainer, TileLayer, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { MODEL_STYLES } from './constants'
 import Panel from './components/Panel'
+import SeedDrawer from './components/SeedDrawer'
 import AnimationControls from './components/AnimationControls'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
-// Componente che gestisce i layer Leaflet (markers + traiettorie) imperativamante
 function SimLayer({ simData, currentStep }) {
-  const map      = useMap()
+  const map         = useMap()
   const markersRef  = useRef([])
   const trajsRef    = useRef([])
   const rendererRef = useRef(L.canvas({ padding: 0.5 }))
 
-  // Costruisce layer quando arrivano nuovi dati
   useEffect(() => {
     if (!simData) return
 
-    // Rimuovi layer precedenti
     markersRef.current.forEach(({ marker }) => marker.remove())
     trajsRef.current.forEach(l => l.remove())
     markersRef.current = []
     trajsRef.current   = []
 
-    const { steps, times } = simData
+    const { steps } = simData
     const style      = MODEL_STYLES[simData.model] ?? MODEL_STYLES.OceanDrift
     const nParticles = steps[0].length
     const nTime      = steps.length
     const renderer   = rendererRef.current
 
-    // Traiettorie statiche
     for (let p = 0; p < nParticles; p++) {
       const coords = []
       for (let t = 0; t < nTime; t++) {
         const pos = steps[t][p]
         if (pos) coords.push([pos[1], pos[0]])
       }
-      if (coords.length > 1) {
+      if (coords.length > 1)
         trajsRef.current.push(
           L.polyline(coords, { color: style.traj, opacity: 0.18, weight: 1, renderer }).addTo(map)
         )
-      }
     }
 
-    // Markers
     for (let p = 0; p < nParticles; p++) {
       const pos    = steps[0][p]
       const latlng = pos ? [pos[1], pos[0]] : [0, 0]
@@ -56,7 +51,6 @@ function SimLayer({ simData, currentStep }) {
       markersRef.current.push({ marker, idx: p })
     }
 
-    // Fit bounds
     const allCoords = steps.flat().filter(Boolean).map(p => [p[1], p[0]])
     if (allCoords.length > 0)
       map.fitBounds(L.latLngBounds(allCoords), { padding: [50, 50] })
@@ -67,7 +61,6 @@ function SimLayer({ simData, currentStep }) {
     }
   }, [simData, map])
 
-  // Aggiorna posizioni al cambio di step
   useEffect(() => {
     if (!simData || markersRef.current.length === 0) return
     const positions = simData.steps[currentStep]
@@ -94,9 +87,21 @@ export default function App() {
   const [status,      setStatus]      = useState('')
   const [statusType,  setStatusType]  = useState('')
 
+  const [drawMode,  setDrawMode]  = useState(null)
+  const [seedShape, setSeedShape] = useState(null)
+
   const timerRef = useRef(null)
 
-  // Loop animazione
+  function handleStartDraw(mode) {
+    setDrawMode(mode)
+    setSeedShape(null)
+  }
+
+  function handleShapeDone(shape) {
+    setSeedShape(shape)
+    setDrawMode(null)
+  }
+
   const tick = useCallback(() => {
     setCurrentStep(prev => {
       if (prev >= (simData?.steps.length ?? 1) - 1) {
@@ -108,10 +113,7 @@ export default function App() {
   }, [simData])
 
   useEffect(() => {
-    if (!isPlaying) {
-      clearTimeout(timerRef.current)
-      return
-    }
+    if (!isPlaying) { clearTimeout(timerRef.current); return }
     const delay = Math.max(40, 1000 / speed)
     timerRef.current = setTimeout(tick, delay)
     return () => clearTimeout(timerRef.current)
@@ -127,9 +129,20 @@ export default function App() {
     }
   }
 
-  async function handleRun(params) {
+  async function handleRun({ model, start_time, number, duration_hours }) {
+    if (!seedShape) {
+      setStatus("Disegna prima un'area di seeding sulla mappa.", 'error')
+      setStatusType('error')
+      return
+    }
+
+    const seedParams = seedShape.type === 'circle'
+      ? { seeding_type: 'circle', lon: seedShape.lon, lat: seedShape.lat, radius: seedShape.radius }
+      : { seeding_type: 'rectangle', lon_min: seedShape.lon_min, lat_min: seedShape.lat_min,
+          lon_max: seedShape.lon_max, lat_max: seedShape.lat_max }
+
     setLoading(true)
-    setStatus(`Simulazione ${MODEL_STYLES[params.model]?.label ?? params.model}… (1-2 min)`)
+    setStatus(`Simulazione ${MODEL_STYLES[model]?.label ?? model}… (1-2 min)`)
     setStatusType('')
     setSimData(null)
     setIsPlaying(false)
@@ -139,7 +152,7 @@ export default function App() {
       const resp = await fetch('/processes/opendrift/execution', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ inputs: params }),
+        body:    JSON.stringify({ inputs: { model, start_time, number, duration_hours, ...seedParams } }),
       })
 
       if (!resp.ok) {
@@ -181,6 +194,11 @@ export default function App() {
           maxZoom={19}
         />
         <SimLayer simData={simData} currentStep={currentStep} />
+        <SeedDrawer
+          drawMode={drawMode}
+          seedShape={seedShape}
+          onShapeDone={handleShapeDone}
+        />
       </MapContainer>
 
       <Panel
@@ -188,6 +206,9 @@ export default function App() {
         loading={loading}
         status={status}
         statusType={statusType}
+        drawMode={drawMode}
+        onStartDraw={handleStartDraw}
+        seedShape={seedShape}
       />
 
       {simData && (
