@@ -1,4 +1,6 @@
-# Digital Twin Ocean — Sea Connectivity
+# Digital Twin Ocean — A Graphical Interface to the PMAR engine
+
+Note: consider that the README could be NOT updated to the latest commit.
 
 A lightweight web application for Lagrangian particle tracking in the ocean. It combines an OGC API Processing backend with an interactive map frontend to simulate how substances and organisms disperse under real ocean currents.
 
@@ -10,6 +12,8 @@ A lightweight web application for Lagrangian particle tracking in the ocean. It 
 demo_5/
 ├── processes/
 │   └── OpenDriftProcess.py   # OGC API process: runs OpenDrift with CMEMS data
+|   └── PMARProcess.py        #                : runs PMAR with CMEMS data
+|   └── WindfarmsProcess.py   #                : runs PMAR with CMEMS + EmodNet data for windfarms
 ├── frontend/
 │   └── src/                  # React + Vite SPA
 ├── cache/                    # Downloaded CMEMS NetCDF files (auto-managed)
