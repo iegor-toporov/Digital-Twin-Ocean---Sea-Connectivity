@@ -341,7 +341,7 @@ def _get_wind_file(lon, lat, start_time, end_time):
 
 
 def _build_bbox(snap_lon, snap_lat, snap_start, n_days):
-    margin   = 5.0 + n_days * 0.02
+    margin   = 5.0 + n_days * 0.02                             # -> TODO da vedere se va bene cosi o è da cambiare
     snap_end = snap_start + timedelta(days=n_days)
     return dict(
         minimum_longitude = snap_lon - margin,

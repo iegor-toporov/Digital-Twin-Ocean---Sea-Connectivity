@@ -1,6 +1,6 @@
 # Digital Twin Ocean — Sea Connectivity
 
-A lightweight web application for Lagrangian particle tracking in the ocean, built for ISMAR (Venice). It combines an OGC API Processing backend with an interactive map frontend to simulate how substances and organisms disperse under real ocean currents.
+A lightweight web application for Lagrangian particle tracking in the ocean. It combines an OGC API Processing backend with an interactive map frontend to simulate how substances and organisms disperse under real ocean currents.
 
 ---
 

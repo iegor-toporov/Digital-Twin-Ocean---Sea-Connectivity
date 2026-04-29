@@ -90,3 +90,13 @@ resources:
       type: process
       processor:
             name: processes.OpenDriftProcess.OpenDriftProcessor
+
+    pmar:
+      type: process
+      processor:
+            name: processes.PMARProcess.PMARProcessor
+
+    windfarms:
+      type: process
+      processor:
+            name: processes.WindfarmsProcess.WindfarmsProcessor

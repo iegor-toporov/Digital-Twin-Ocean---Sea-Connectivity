@@ -6,11 +6,13 @@ import { useLang } from './LanguageContext'
 import Panel from './components/Panel'
 import SeedDrawer from './components/SeedDrawer'
 import AnimationControls from './components/AnimationControls'
+import PmarControls from './components/PmarControls'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 
 const STRANDED_STYLE = { color: '#ef4444', fillColor: '#fca5a5', weight: 2 }
 
+// ── OpenDrift trajectory layer ────────────────────────────────────────────────
 function SimLayer({ simData, currentStep }) {
   const map         = useMap()
   const markersRef  = useRef([])
@@ -96,8 +98,166 @@ function SimLayer({ simData, currentStep }) {
   return null
 }
 
+// ── EMODnet wind farms overlay ────────────────────────────────────────────────
+function WindFarmsLayer({ geojson, visible }) {
+  const map        = useMap()
+  const layerRef   = useRef(null)
+  const markersRef = useRef([])
+
+  useEffect(() => {
+    layerRef.current?.remove()
+    layerRef.current = null
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = []
+    if (!geojson?.features?.length) return
+
+    layerRef.current = L.geoJSON(geojson, {
+      style: {
+        color:       '#facc15',
+        fillColor:   '#fef08a',
+        fillOpacity: 0.18,
+        weight:      1.5,
+        opacity:     0.75,
+        dashArray:   '5 4',
+      },
+    }).addTo(map)
+
+    geojson.features.forEach(feature => {
+      try {
+        const bounds = L.geoJSON(feature).getBounds()
+        if (!bounds.isValid()) return
+        const marker = L.marker(bounds.getCenter(), {
+          icon: L.divIcon({
+            html:       '<span class="wf-icon">⚡</span>',
+            className:  '',
+            iconSize:   [22, 22],
+            iconAnchor: [11, 11],
+          }),
+          interactive: false,
+          zIndexOffset: 500,
+        }).addTo(map)
+        markersRef.current.push(marker)
+      } catch { /* geometria non valida, skip */ }
+    })
+
+    return () => {
+      layerRef.current?.remove()
+      markersRef.current.forEach(m => m.remove())
+    }
+  }, [geojson, map])
+
+  useEffect(() => {
+    if (!layerRef.current) return
+    layerRef.current.setStyle({
+      opacity:     visible ? 0.75 : 0,
+      fillOpacity: visible ? 0.18 : 0,
+    })
+    markersRef.current.forEach(m => {
+      const el = m.getElement()
+      if (el) el.style.opacity = visible ? '1' : '0'
+    })
+  }, [visible])
+
+  return null
+}
+
+// ── PMAR raster overlay ───────────────────────────────────────────────────────
+function PmarLayer({ pmarData, visible }) {
+  const map        = useMap()
+  const overlayRef = useRef(null)
+
+  useEffect(() => {
+    overlayRef.current?.remove()
+    overlayRef.current = null
+    if (!pmarData?.image_b64 || !pmarData.bounds) return
+
+    const imgUrl = `data:image/png;base64,${pmarData.image_b64}`
+    const bounds = L.latLngBounds(pmarData.bounds)
+    overlayRef.current = L.imageOverlay(imgUrl, bounds, { opacity: 0.8, zIndex: 400 }).addTo(map)
+    map.fitBounds(bounds, { padding: [50, 50] })
+
+    return () => overlayRef.current?.remove()
+  }, [pmarData, map])
+
+  useEffect(() => {
+    if (!overlayRef.current) return
+    if (visible) {
+      overlayRef.current.setOpacity(0.8)
+    } else {
+      overlayRef.current.setOpacity(0)
+    }
+  }, [visible])
+
+  return null
+}
+
+// ── Seed shape → GeoJSON ──────────────────────────────────────────────────────
+function seedShapeToGeoJSON(shape) {
+  if (!shape) return null
+  if (shape.type === 'circle') {
+    const { lon, lat, radius } = shape
+    const N      = 64
+    const coords = []
+    for (let i = 0; i < N; i++) {
+      const angle = (i / N) * 2 * Math.PI
+      const dLat  = (radius / 111320) * Math.cos(angle)
+      const dLon  = (radius / (111320 * Math.cos(lat * Math.PI / 180))) * Math.sin(angle)
+      coords.push([lon + dLon, lat + dLat])
+    }
+    coords.push(coords[0])
+    return {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [coords] },
+        properties: {},
+      }],
+    }
+  }
+  // rectangle
+  const { lon_min, lat_min, lon_max, lat_max } = shape
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [lon_min, lat_min], [lon_max, lat_min],
+          [lon_max, lat_max], [lon_min, lat_max],
+          [lon_min, lat_min],
+        ]],
+      },
+      properties: {},
+    }],
+  }
+}
+
+function seedShapeBounds(shape) {
+  if (!shape) return null
+  if (shape.type === 'circle') {
+    const { lon, lat, radius } = shape
+    const dLat = radius / 111320
+    const dLon = radius / (111320 * Math.cos(lat * Math.PI / 180))
+    return { lon_min: lon - dLon, lat_min: lat - dLat, lon_max: lon + dLon, lat_max: lat + dLat }
+  }
+  const { lon_min, lat_min, lon_max, lat_max } = shape
+  return { lon_min, lat_min, lon_max, lat_max }
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { t }                         = useLang()
+  const { t, lang } = useLang()
+
+  // active tool
+  const [activeTool, setActiveTool] = useState('opendrift')
+
+  // seed shape (shared between tools)
+  const [drawMode,      setDrawMode]      = useState(null)
+  const [seedShape,     setSeedShape]     = useState(null)
+  const [showSeedShape, setShowSeedShape] = useState(true)
+
+  // OpenDrift state
   const [simData,     setSimData]     = useState(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [isPlaying,   setIsPlaying]   = useState(false)
@@ -106,12 +266,62 @@ export default function App() {
   const [status,      setStatus]      = useState('')
   const [statusType,  setStatusType]  = useState('')
 
-  const [drawMode,       setDrawMode]       = useState(null)
-  const [seedShape,      setSeedShape]      = useState(null)
-  const [showSeedShape,  setShowSeedShape]  = useState(true)
+  // PMAR state
+  const [pmarData,        setPmarData]        = useState(null)
+  const [pmarLoading,     setPmarLoading]     = useState(false)
+  const [pmarStatus,      setPmarStatus]      = useState('')
+  const [pmarStatusType,  setPmarStatusType]  = useState('')
+  const [showPmarRaster,  setShowPmarRaster]  = useState(true)
+  const [showWindFarms,   setShowWindFarms]   = useState(true)
+
+  // Wind farms use-layer state (lifted from PmarPanel)
+  const [useSource,        setUseSource]        = useState('none')
+  const [windfarmsPreview, setWindfarmsPreview] = useState(null)
+  const [windfarmsLoading, setWindfarmsLoading] = useState(false)
+  const [windfarmsEmpty,   setWindfarmsEmpty]   = useState(false)
+
+  // Derived: prefer result from PMAR run, fall back to preview fetch
+  const windfarmsGeoJSON = pmarData?.windfarms_geojson ?? windfarmsPreview
 
   const timerRef = useRef(null)
 
+  // ── Wind farms preview fetch ───────────────────────────────────────────────
+  useEffect(() => {
+    if (useSource !== 'windfarms' || !seedShape) {
+      setWindfarmsPreview(null)
+      return
+    }
+    const bounds = seedShapeBounds(seedShape)
+    if (!bounds) return
+
+    setWindfarmsPreview(null)
+    setWindfarmsEmpty(false)
+    setWindfarmsLoading(true)
+    fetch('/processes/windfarms/execution', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ inputs: bounds }),
+    })
+      .then(r => r.json())
+      .then(raw => {
+        const data = raw.result ?? raw
+        if (data?.features?.length > 0) {
+          setWindfarmsPreview(data)
+        } else {
+          setWindfarmsEmpty(true)
+        }
+      })
+      .catch(() => { setWindfarmsEmpty(true) })
+      .finally(() => setWindfarmsLoading(false))
+  }, [useSource, seedShape])
+
+  // ── Tool change ────────────────────────────────────────────────────────────
+  function handleToolChange(tool) {
+    setActiveTool(tool)
+    setDrawMode(null)
+  }
+
+  // ── Seed drawing ───────────────────────────────────────────────────────────
   function handleStartDraw(mode) {
     setDrawMode(mode)
     setSeedShape(null)
@@ -122,6 +332,7 @@ export default function App() {
     setDrawMode(null)
   }
 
+  // ── OpenDrift animation ────────────────────────────────────────────────────
   const tick = useCallback(() => {
     setCurrentStep(prev => {
       if (prev >= (simData?.steps.length ?? 1) - 1) {
@@ -149,7 +360,8 @@ export default function App() {
     }
   }
 
-  async function handleRun({ model, start_time, number, duration_hours, compound }) {
+  // ── OpenDrift run ──────────────────────────────────────────────────────────
+  async function handleRun({ model, start_time, number, duration_hours }) {
     if (!seedShape) {
       setStatus(t.status.noShape)
       setStatusType('error')
@@ -172,7 +384,7 @@ export default function App() {
       const resp = await fetch('/processes/opendrift/execution', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ inputs: { model, start_time, number, duration_hours, ...seedParams, ...(compound && { compound }) } }),
+        body:    JSON.stringify({ inputs: { model, start_time, number, duration_hours, ...seedParams } }),
       })
 
       if (!resp.ok) {
@@ -181,9 +393,7 @@ export default function App() {
         try {
           const json = JSON.parse(text)
           if (json.description) message = json.description
-        } catch {
-          message = text.slice(0, 300)
-        }
+        } catch { message = text.slice(0, 300) }
         throw new Error(message)
       }
 
@@ -206,6 +416,67 @@ export default function App() {
     }
   }
 
+  // ── PMAR run ───────────────────────────────────────────────────────────────
+  async function handleRunPmar({ pressure, start_time, duration_days, pnum, res, shapefile_b64 }) {
+    const geojson = shapefile_b64 ? null : seedShapeToGeoJSON(seedShape)
+
+    if (!geojson && !shapefile_b64) {
+      setPmarStatus(t.status.noShape)
+      setPmarStatusType('error')
+      return
+    }
+
+    setPmarLoading(true)
+    setPmarData(null)
+    setPmarStatus(t.pmar.btnRunning.replace('⏳ ', '').replace('…', '…'))
+    setPmarStatusType('')
+
+    try {
+      const inputs = {
+        pressure,
+        use_source: useSource,
+        start_time,
+        duration_days,
+        pnum,
+        res,
+        ...(geojson       ? { geojson: JSON.stringify(geojson) } : {}),
+        ...(shapefile_b64 ? { shapefile_b64 }                    : {}),
+      }
+
+      const resp = await fetch('/processes/pmar/execution', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ inputs }),
+      })
+
+      if (!resp.ok) {
+        const text = await resp.text()
+        let message = t.status.httpError(resp.status)
+        try {
+          const json = JSON.parse(text)
+          if (json.description) message = json.description
+        } catch { message = text.slice(0, 300) }
+        throw new Error(message)
+      }
+
+      const raw  = await resp.json()
+      const data = raw.result ?? raw
+
+      if (!data.image_b64 || !data.bounds) throw new Error(t.status.badResponse)
+
+      const label = lang === 'it' ? data.label_it : data.label_en
+      setPmarData(data)
+      setPmarStatus(`✓ PMAR — ${label}`)
+      setPmarStatusType('ok')
+
+    } catch (err) {
+      setPmarStatus(t.status.error(err.message))
+      setPmarStatusType('error')
+    } finally {
+      setPmarLoading(false)
+    }
+  }
+
   return (
     <div style={{ position: 'relative', height: '100vh' }}>
       <MapContainer
@@ -221,6 +492,8 @@ export default function App() {
           maxZoom={19}
         />
         <SimLayer simData={simData} currentStep={currentStep} />
+        <PmarLayer pmarData={pmarData} visible={showPmarRaster} />
+        <WindFarmsLayer geojson={windfarmsGeoJSON} visible={showWindFarms} />
         <SeedDrawer
           drawMode={drawMode}
           seedShape={seedShape}
@@ -231,13 +504,36 @@ export default function App() {
 
       <Panel
         onRun={handleRun}
+        onRunPmar={handleRunPmar}
         loading={loading}
         status={status}
         statusType={statusType}
+        pmarLoading={pmarLoading}
+        pmarStatus={pmarStatus}
+        pmarStatusType={pmarStatusType}
         drawMode={drawMode}
         onStartDraw={handleStartDraw}
         seedShape={seedShape}
+        activeTool={activeTool}
+        onToolChange={handleToolChange}
+        useSource={useSource}
+        onUseSourceChange={src => { setUseSource(src); setWindfarmsEmpty(false) }}
+        windfarmsLoading={windfarmsLoading}
+        windfarmsEmpty={windfarmsEmpty}
       />
+
+      {pmarData && (
+        <PmarControls
+          showPmarRaster={showPmarRaster}
+          onTogglePmarRaster={() => setShowPmarRaster(v => !v)}
+          showSeedShape={showSeedShape}
+          onToggleSeedShape={() => setShowSeedShape(v => !v)}
+          showWindFarms={showWindFarms}
+          onToggleWindFarms={() => setShowWindFarms(v => !v)}
+          hasWindFarms={!!windfarmsGeoJSON}
+          elevated={!!simData}
+        />
+      )}
 
       {simData && (
         <AnimationControls

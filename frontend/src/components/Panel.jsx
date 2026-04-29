@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { MODELS, defaultStartTime } from '../constants'
 import { useLang } from '../LanguageContext'
 import ModelCard from './ModelCard'
+import PmarPanel from './PmarPanel'
 import './Panel.css'
 
-function formatSeedShape(s, lang) {
+function formatSeedShape(s) {
   if (!s) return null
   if (s.type === 'circle') {
     const km = (s.radius / 1000).toFixed(1)
@@ -13,12 +14,19 @@ function formatSeedShape(s, lang) {
   return `${s.lon_min.toFixed(2)}°–${s.lon_max.toFixed(2)}°E · ${s.lat_min.toFixed(2)}°–${s.lat_max.toFixed(2)}°N`
 }
 
-export default function Panel({ onRun, loading, status, statusType, drawMode, onStartDraw, seedShape }) {
+export default function Panel({
+  onRun, onRunPmar,
+  loading, status, statusType,
+  pmarLoading, pmarStatus, pmarStatusType,
+  drawMode, onStartDraw, seedShape,
+  activeTool, onToolChange,
+  useSource, onUseSourceChange, windfarmsLoading, windfarmsEmpty,
+}) {
   const { lang, t, toggle } = useLang()
   const [selectedModel, setSelectedModel] = useState('OceanDrift')
-  const [startTime, setStartTime] = useState(defaultStartTime())
-  const [number,    setNumber]    = useState('100')
-  const [duration,  setDuration]  = useState('24')
+  const [startTime, setStartTime]         = useState(defaultStartTime())
+  const [number,    setNumber]            = useState('100')
+  const [duration,  setDuration]          = useState('24')
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -30,79 +38,112 @@ export default function Panel({ onRun, loading, status, statusType, drawMode, on
     })
   }
 
-  const seedInfo = formatSeedShape(seedShape, lang)
-  const p = t.panel
+  const seedInfo = formatSeedShape(seedShape)
+  const p        = t.panel
 
   return (
     <div className="panel">
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="panel-header">
-        <h2>{p.title}</h2>
+        <h2>{activeTool === 'pmar' ? t.pmar.title : p.title}</h2>
         <button className="lang-btn" onClick={toggle} title="Switch language">
           {lang === 'it' ? 'EN' : 'IT'}
         </button>
       </div>
 
-      <div className="section-label">{p.sectionModel}</div>
-      <div className="model-grid">
-        {MODELS.map(m => (
-          <ModelCard
-            key={m.key}
-            model={{ ...m, name: t.models[m.key].name, desc: t.models[m.key].desc }}
-            active={selectedModel === m.key}
-            onClick={() => setSelectedModel(m.key)}
-          />
-        ))}
-      </div>
-
-      <div className="section-label" style={{ marginTop: 14 }}>{p.sectionSeed}</div>
-      <div className="draw-buttons">
+      {/* ── Tool tabs ────────────────────────────────────────────────── */}
+      <div className="tool-tabs">
         <button
-          className={`draw-btn${drawMode === 'circle' ? ' active' : ''}`}
+          className={`tool-tab${activeTool === 'opendrift' ? ' active' : ''}`}
+          onClick={() => onToolChange('opendrift')}
           type="button"
-          onClick={() => onStartDraw('circle')}
         >
-          {p.btnCircle}
+          🌊 {t.tools.opendrift}
         </button>
         <button
-          className={`draw-btn${drawMode === 'rectangle' ? ' active' : ''}`}
+          className={`tool-tab${activeTool === 'pmar' ? ' active' : ''}`}
+          onClick={() => onToolChange('pmar')}
           type="button"
-          onClick={() => onStartDraw('rectangle')}
         >
-          {p.btnRect}
+          📊 {t.tools.pmar}
         </button>
       </div>
 
-      {drawMode === 'circle'    && <div className="draw-hint">{p.hintCircle}</div>}
-      {drawMode === 'rectangle' && <div className="draw-hint">{p.hintRect}</div>}
-      {!drawMode && seedInfo    && <div className="seed-info">{seedInfo}</div>}
-      {!drawMode && !seedShape  && <div className="draw-hint">{p.hintNoShape}</div>}
+      {/* ── OpenDrift panel ─────────────────────────────────────────── */}
+      {activeTool === 'opendrift' && (
+        <>
+          <div className="section-label">{p.sectionModel}</div>
+          <div className="model-grid">
+            {MODELS.map(m => (
+              <ModelCard
+                key={m.key}
+                model={{ ...m, name: t.models[m.key].name, desc: t.models[m.key].desc }}
+                active={selectedModel === m.key}
+                onClick={() => setSelectedModel(m.key)}
+              />
+            ))}
+          </div>
 
-      <form onSubmit={handleSubmit}>
-        <div className="form-row">
-          <label>{p.labelStart}</label>
-          <input type="datetime-local" value={startTime}
-            onChange={e => setStartTime(e.target.value)} />
-        </div>
+          <div className="section-label" style={{ marginTop: 14 }}>{p.sectionSeed}</div>
+          <div className="draw-buttons">
+            <button
+              className={`draw-btn${drawMode === 'circle' ? ' active' : ''}`}
+              type="button"
+              onClick={() => onStartDraw('circle')}
+            >{p.btnCircle}</button>
+            <button
+              className={`draw-btn${drawMode === 'rectangle' ? ' active' : ''}`}
+              type="button"
+              onClick={() => onStartDraw('rectangle')}
+            >{p.btnRect}</button>
+          </div>
+          {drawMode === 'circle'    && <div className="draw-hint">{p.hintCircle}</div>}
+          {drawMode === 'rectangle' && <div className="draw-hint">{p.hintRect}</div>}
+          {!drawMode && seedInfo    && <div className="seed-info">{seedInfo}</div>}
+          {!drawMode && !seedShape  && <div className="draw-hint">{p.hintNoShape}</div>}
 
-        <div className="form-row">
-          <label>{p.labelParticles}</label>
-          <input type="number" value={number} min="1" max="10000"
-            onChange={e => setNumber(e.target.value)} />
-        </div>
+          <form onSubmit={handleSubmit}>
+            <div className="form-row">
+              <label>{p.labelStart}</label>
+              <input type="datetime-local" value={startTime}
+                onChange={e => setStartTime(e.target.value)} />
+            </div>
+            <div className="form-row">
+              <label>{p.labelParticles}</label>
+              <input type="number" value={number} min="1" max="10000"
+                onChange={e => setNumber(e.target.value)} />
+            </div>
+            <div className="form-row">
+              <label>{p.labelDuration}</label>
+              <input type="number" value={duration} min="1" max="720"
+                onChange={e => setDuration(e.target.value)} />
+            </div>
+            <button className="run-btn" type="submit" disabled={loading || !seedShape}>
+              {loading ? p.btnRunning : p.btnRun}
+            </button>
+          </form>
 
-        <div className="form-row">
-          <label>{p.labelDuration}</label>
-          <input type="number" value={duration} min="1" max="720"
-            onChange={e => setDuration(e.target.value)} />
-        </div>
+          {status && (
+            <div className={`status ${statusType}`}>{status}</div>
+          )}
+        </>
+      )}
 
-        <button className="run-btn" type="submit" disabled={loading || !seedShape}>
-          {loading ? p.btnRunning : p.btnRun}
-        </button>
-      </form>
-
-      {status && (
-        <div className={`status ${statusType}`}>{status}</div>
+      {/* ── PMAR panel ───────────────────────────────────────────────── */}
+      {activeTool === 'pmar' && (
+        <PmarPanel
+          onRun={onRunPmar}
+          loading={pmarLoading}
+          status={pmarStatus}
+          statusType={pmarStatusType}
+          drawMode={drawMode}
+          onStartDraw={onStartDraw}
+          seedShape={seedShape}
+          useSource={useSource}
+          onUseSourceChange={onUseSourceChange}
+          windfarmsLoading={windfarmsLoading}
+          windfarmsEmpty={windfarmsEmpty}
+        />
       )}
     </div>
   )
