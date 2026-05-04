@@ -20,7 +20,9 @@ export default function Panel({
   pmarLoading, pmarStatus, pmarStatusType,
   drawMode, onStartDraw, seedShape,
   activeTool, onToolChange,
-  useSource, onUseSourceChange, windfarmsLoading, windfarmsEmpty,
+  useSource, onUseSourceChange,
+  windfarmsLoading, windfarmsEmpty,
+  offshoreLoading, offshoreEmpty,
 }) {
   const { lang, t, toggle } = useLang()
   const [selectedModel, setSelectedModel] = useState('OceanDrift')
@@ -143,6 +145,8 @@ export default function Panel({
           onUseSourceChange={onUseSourceChange}
           windfarmsLoading={windfarmsLoading}
           windfarmsEmpty={windfarmsEmpty}
+          offshoreLoading={offshoreLoading}
+          offshoreEmpty={offshoreEmpty}
         />
       )}
     </div>

@@ -100,3 +100,8 @@ resources:
       type: process
       processor:
             name: processes.WindfarmsProcess.WindfarmsProcessor
+
+    offshore_installations:
+      type: process
+      processor:
+            name: processes.OffshoreInstallationsProcess.OffshoreInstallationsProcessor

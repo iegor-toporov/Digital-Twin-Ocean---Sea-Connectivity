@@ -9,8 +9,9 @@ const PRESSURES = [
 ]
 
 const USE_SOURCES = [
-  { key: 'none',      icon: '—'  },
-  { key: 'windfarms', icon: '⚡' },
+  { key: 'none',                   icon: '—'   },
+  { key: 'windfarms',              icon: '⚡'  },
+  { key: 'offshore_installations', icon: '🛢️' },
 ]
 
 const RESOLUTIONS = [
@@ -37,7 +38,9 @@ function formatSeedShape(s) {
 export default function PmarPanel({
   onRun, loading, status, statusType,
   drawMode, onStartDraw, seedShape,
-  useSource, onUseSourceChange, windfarmsLoading, windfarmsEmpty,
+  useSource, onUseSourceChange,
+  windfarmsLoading, windfarmsEmpty,
+  offshoreLoading, offshoreEmpty,
 }) {
   const { t } = useLang()
   const p = t.pmar
@@ -164,8 +167,8 @@ export default function PmarPanel({
             className={`pmar-use-btn${useSource === u.key ? ' active' : ''}`}
             onClick={() => onUseSourceChange(u.key)}
           >
-            {u.key === 'windfarms' && windfarmsLoading
-              ? '⏳ …'
+            {u.key === 'windfarms' && windfarmsLoading ? '⏳ …'
+              : u.key === 'offshore_installations' && offshoreLoading ? '⏳ …'
               : `${u.icon} ${p.useSources[u.key]}`
             }
           </button>
@@ -176,6 +179,12 @@ export default function PmarPanel({
       )}
       {useSource === 'windfarms' && windfarmsEmpty && (
         <div className="pmar-use-warn">{p.useWindfarmsEmpty}</div>
+      )}
+      {useSource === 'offshore_installations' && !offshoreEmpty && (
+        <div className="pmar-use-info">{p.useOffshoreInfo}</div>
+      )}
+      {useSource === 'offshore_installations' && offshoreEmpty && (
+        <div className="pmar-use-warn">{p.useOffshoreEmpty}</div>
       )}
 
       {/* ── Params ───────────────────────────────────────────────────── */}

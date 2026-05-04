@@ -9,6 +9,10 @@ export default function PmarControls({
   showWindFarms,
   onToggleWindFarms,
   hasWindFarms,
+  showOffshoreInstallations,
+  onToggleOffshoreInstallations,
+  hasOffshoreInstallations,
+  onDownloadPmar,
   elevated,
 }) {
   const { t } = useLang()
@@ -43,6 +47,21 @@ export default function PmarControls({
           ⚡ {showWindFarms ? c.hideWindFarms : c.showWindFarms}
         </button>
       )}
+
+      {hasOffshoreInstallations && (
+        <button
+          className={`pmar-toggle-btn${showOffshoreInstallations ? ' active' : ''}`}
+          onClick={onToggleOffshoreInstallations}
+          title={showOffshoreInstallations ? c.hideOffshore : c.showOffshore}
+        >
+          🛢️ {showOffshoreInstallations ? c.hideOffshore : c.showOffshore}
+        </button>
+      )}
+
+      <span className="pmar-controls-sep" />
+      <button className="pmar-toggle-btn" onClick={onDownloadPmar} title={c.downloadRaster}>
+        ⬇ {c.downloadRaster}
+      </button>
     </div>
   )
 }

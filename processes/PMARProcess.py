@@ -109,7 +109,7 @@ PROCESS_METADATA = {
         },
         'use_source': {
             'title': 'Anthropogenic use layer',
-            'description': '"none" (default) or "windfarms" (EMODnet Human Activities).',
+            'description': '"none" (default), "windfarms" or "offshore_installations" (EMODnet Human Activities).',
             'schema': {'type': 'string', 'default': 'none'},
             'minOccurs': 0, 'maxOccurs': 1,
         },
@@ -131,6 +131,11 @@ class PMARProcessor(BaseProcessor):
     def execute(self, data):
         import xarray as xr
         from pmar.pmar import PMAR
+        # pmar.py (riga 41) setta PROJ_LIB a un path conda hardcoded inesistente su questo sistema,
+        # corrompendo PROJ per pyproj e rasterio. Lo rimuoviamo così entrambe le librerie
+        # usano i propri data dir di default, che funzionano correttamente.
+        os.environ.pop('PROJ_LIB', None)
+        os.environ.pop('PROJ_DATA', None)
 
         geojson_input = data.get('geojson')
         shapefile_b64 = data.get('shapefile_b64')
@@ -225,8 +230,7 @@ class PMARProcessor(BaseProcessor):
                         if float(use_raster.max()) > 0:
                             use_weighted = True
                             use_geojson  = json.loads(
-                                gdf_wf[['geometry']].to_crs('EPSG:4326')
-                                .simplify(0.01).to_json()
+                                gdf_wf[['geometry']].simplify(0.01).to_json()
                             )
                             logger.info(f'Wind farms raster pronto: {len(gdf_wf)} feature')
                         else:
@@ -234,6 +238,23 @@ class PMARProcessor(BaseProcessor):
                             use_raster = None
                     else:
                         logger.warning('Nessuna wind farm trovata nell\'area di studio')
+
+                elif use_source == 'offshore_installations':
+                    logger.info('Recupero impianti offshore da EMODnet...')
+                    gdf_oi = _fetch_offshore_installations(study_area, EMODNET_CACHE_DIR)
+                    if not gdf_oi.empty:
+                        use_raster = _gdf_to_use_raster(gdf_oi, p.grid)
+                        if float(use_raster.max()) > 0:
+                            use_weighted = True
+                            use_geojson  = json.loads(
+                                gdf_oi[['geometry']].to_json()
+                            )
+                            logger.info(f'Impianti offshore raster pronto: {len(gdf_oi)} feature')
+                        else:
+                            logger.warning("Nessun impianto offshore sovrapposto all'area di seeding")
+                            use_raster = None
+                    else:
+                        logger.warning('Nessun impianto offshore trovato nell\'area di studio')
 
                 h = p.get_histogram(
                     res=res,
@@ -246,6 +267,7 @@ class PMARProcessor(BaseProcessor):
                 )
 
                 img_b64, map_bounds = _raster_to_png(h)
+                geotiff_b64 = _histogram_to_geotiff(h)
 
                 logger.info(
                     f'PMAR completato: particles={pnum}, steps={len(p.ds.time)}, '
@@ -253,17 +275,24 @@ class PMARProcessor(BaseProcessor):
                 )
 
                 result = {
-                    'type':       'raster',
-                    'image_b64':  img_b64,
-                    'bounds':     map_bounds,
-                    'pressure':   pressure,
-                    'label_it':   pm['label_it'],
-                    'label_en':   pm['label_en'],
-                    'use_source': use_source,
+                    'type':        'raster',
+                    'image_b64':   img_b64,
+                    'geotiff_b64': geotiff_b64,
+                    'bounds':      map_bounds,
+                    'pressure':    pressure,
+                    'label_it':    pm['label_it'],
+                    'label_en':    pm['label_en'],
+                    'use_source':  use_source,
                     'use_weighted': use_weighted,
+                    'start_time':  start_time.strftime('%Y%m%d'),
+                    'end_time':    end_time.strftime('%Y%m%d'),
+                    'pnum':        pnum,
                 }
                 if use_geojson:
-                    result['windfarms_geojson'] = use_geojson
+                    if use_source == 'windfarms':
+                        result['windfarms_geojson'] = use_geojson
+                    elif use_source == 'offshore_installations':
+                        result['offshore_geojson'] = use_geojson
 
                 return 'application/json', result
 
@@ -320,6 +349,46 @@ def _resolve_shapefile(geojson_input, shapefile_b64, tmpdir):
         return shp_files[0]
 
     raise ProcessorExecuteError('Fornire geojson oppure shapefile_b64.')
+
+
+def _histogram_to_geotiff(h):
+    """Serialize a PMAR histogram DataArray to a GeoTIFF (EPSG:4326) and return it as base64."""
+    import rasterio
+    from rasterio.transform import from_bounds
+    from rasterio.crs import CRS
+
+    arr = h.values.astype(np.float32)       # shape (ny, nx), row 0 = south
+    x_vals = h.coords['x'].values
+    y_vals = h.coords['y'].values
+    nx, ny = len(x_vals), len(y_vals)
+
+    dx = float(x_vals[1] - x_vals[0]) if nx > 1 else 0.1
+    dy = float(y_vals[1] - y_vals[0]) if ny > 1 else 0.1
+
+    west  = float(x_vals.min()) - dx / 2
+    east  = float(x_vals.max()) + dx / 2
+    south = float(y_vals.min()) - dy / 2
+    north = float(y_vals.max()) + dy / 2
+
+    # rasterio is north-up: row 0 = north → flip
+    arr_geo   = np.flipud(arr)
+    transform = from_bounds(west, south, east, north, nx, ny)
+
+    buf = io.BytesIO()
+    with rasterio.open(
+        buf, 'w',
+        driver='GTiff',
+        height=ny, width=nx,
+        count=1,
+        dtype=arr_geo.dtype,
+        crs=CRS.from_epsg(4326),
+        transform=transform,
+        compress='lzw',
+        nodata=0.0,
+    ) as dst:
+        dst.write(arr_geo, 1)
+    buf.seek(0)
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
 def _raster_to_png(h):
@@ -406,6 +475,53 @@ def _fetch_windfarms(study_area, cache_dir):
     base_url = 'https://ows.emodnet-humanactivities.eu/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&OUTPUTFORMAT=application/json'
     gdf = None
     for layer in ('emodnet:windfarmspoly', 'emodnet:windfarms'):
+        url = f'{base_url}&TYPENAMES={layer}&BBOX={bbox_str}'
+        try:
+            candidate = gpd.read_file(url)
+            if not candidate.empty:
+                gdf = candidate
+                logger.info(f'EMODnet layer usato: {layer}, features: {len(gdf)}')
+                break
+            logger.debug(f'EMODnet layer {layer}: 0 features nell\'area')
+        except Exception as exc:
+            logger.warning(f'EMODnet WFS {layer} fallito: {exc}')
+
+    if gdf is None:
+        return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], dtype='geometry', crs='EPSG:4326'))
+
+    if gdf.crs is None:
+        gdf = gdf.set_crs('EPSG:4326')
+    else:
+        gdf = gdf.to_crs('EPSG:4326')
+
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(cache_file, 'wb') as f:
+        pickle.dump(gdf, f)
+
+    return gdf
+
+
+def _fetch_offshore_installations(study_area, cache_dir):
+    """Query EMODnet WFS for offshore installation features within study_area, with 7-day file cache."""
+    import hashlib
+    import pickle
+
+    lon_min, lat_min, lon_max, lat_max = study_area
+    cache_key  = hashlib.md5(
+        f'oi_{lon_min:.3f}_{lat_min:.3f}_{lon_max:.3f}_{lat_max:.3f}'.encode()
+    ).hexdigest()
+    cache_file = os.path.join(cache_dir, f'offshore_{cache_key}.pkl')
+
+    if os.path.exists(cache_file):
+        age = _time.time() - os.path.getmtime(cache_file)
+        if age < 7 * 86400:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+
+    bbox_str = f'{lon_min},{lat_min},{lon_max},{lat_max},EPSG:4326'
+    base_url = 'https://ows.emodnet-humanactivities.eu/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&OUTPUTFORMAT=application/json'
+    gdf = None
+    for layer in ('emodnet:offshorefacilities', 'emodnet:offshore_installations', 'emodnet:platforms'):
         url = f'{base_url}&TYPENAMES={layer}&BBOX={bbox_str}'
         try:
             candidate = gpd.read_file(url)

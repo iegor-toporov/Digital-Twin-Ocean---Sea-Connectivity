@@ -54,3 +54,10 @@
   border-color: #a78bfa;
   color: #c4b5fd;
 }
+
+.pmar-controls-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(139, 92, 246, 0.25);
+  flex-shrink: 0;
+}

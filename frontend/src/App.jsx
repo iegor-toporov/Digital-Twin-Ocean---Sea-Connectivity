@@ -12,6 +12,16 @@ import './App.css'
 
 const STRANDED_STYLE = { color: '#ef4444', fillColor: '#fca5a5', weight: 2 }
 
+// ── Standard map-pin icon (reusable for all anthropogenic layers) ──────────────
+function createPinIcon(fillColor, strokeColor) {
+  const svg = `<svg width="14" height="21" viewBox="0 0 14 21" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7 0C3.13 0 0 3.13 0 7c0 5.25 7 14 7 14S14 12.25 14 7c0-3.87-3.13-7-7-7z"
+          fill="${fillColor}" stroke="${strokeColor}" stroke-width="1.5"/>
+    <circle cx="7" cy="7" r="2.5" fill="${strokeColor}" opacity="0.6"/>
+  </svg>`
+  return L.divIcon({ html: svg, className: '', iconSize: [14, 21], iconAnchor: [7, 21] })
+}
+
 // ── OpenDrift trajectory layer ────────────────────────────────────────────────
 function SimLayer({ simData, currentStep }) {
   const map         = useMap()
@@ -98,6 +108,65 @@ function SimLayer({ simData, currentStep }) {
   return null
 }
 
+// ── EMODnet offshore installations overlay ────────────────────────────────────
+function OffshoreInstallationsLayer({ geojson, visible }) {
+  const map        = useMap()
+  const layerRef   = useRef(null)
+  const markersRef = useRef([])
+
+  useEffect(() => {
+    layerRef.current?.remove()
+    layerRef.current = null
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = []
+    if (!geojson?.features?.length) return
+
+    const icon = createPinIcon('#fed7aa', '#ea580c')
+
+    layerRef.current = L.geoJSON(geojson, {
+      style: {
+        color:       '#f97316',
+        fillColor:   '#fed7aa',
+        fillOpacity: 0.25,
+        weight:      1.5,
+        opacity:     0.85,
+      },
+      pointToLayer: (_feature, latlng) => {
+        const m = L.marker(latlng, { icon, interactive: false, zIndexOffset: 500 })
+        markersRef.current.push(m)
+        return m
+      },
+    }).addTo(map)
+
+    geojson.features.forEach(feature => {
+      const type = feature.geometry?.type
+      if (type === 'Point' || type === 'MultiPoint') return
+      try {
+        const bounds = L.geoJSON(feature).getBounds()
+        if (!bounds.isValid()) return
+        const m = L.marker(bounds.getCenter(), { icon, interactive: false, zIndexOffset: 500 }).addTo(map)
+        markersRef.current.push(m)
+      } catch { /* geometria non valida, skip */ }
+    })
+
+    return () => {
+      layerRef.current?.remove()
+      markersRef.current.forEach(m => m.remove())
+    }
+  }, [geojson, map])
+
+  useEffect(() => {
+    if (!layerRef.current) return
+    layerRef.current.setStyle({ opacity: visible ? 0.85 : 0, fillOpacity: visible ? 0.25 : 0 })
+    markersRef.current.forEach(m => {
+      const el = m.getElement()
+      if (el) el.style.opacity = visible ? '1' : '0'
+    })
+  }, [visible])
+
+  return null
+}
+
 // ── EMODnet wind farms overlay ────────────────────────────────────────────────
 function WindFarmsLayer({ geojson, visible }) {
   const map        = useMap()
@@ -111,6 +180,8 @@ function WindFarmsLayer({ geojson, visible }) {
     markersRef.current = []
     if (!geojson?.features?.length) return
 
+    const icon = createPinIcon('#fef08a', '#ca8a04')
+
     layerRef.current = L.geoJSON(geojson, {
       style: {
         color:       '#facc15',
@@ -120,20 +191,22 @@ function WindFarmsLayer({ geojson, visible }) {
         opacity:     0.75,
         dashArray:   '5 4',
       },
+      pointToLayer: (_feature, latlng) => {
+        const m = L.marker(latlng, { icon, interactive: false, zIndexOffset: 500 })
+        markersRef.current.push(m)
+        return m
+      },
     }).addTo(map)
 
     geojson.features.forEach(feature => {
+      const type = feature.geometry?.type
+      if (type === 'Point' || type === 'MultiPoint') return
       try {
         const bounds = L.geoJSON(feature).getBounds()
         if (!bounds.isValid()) return
         const marker = L.marker(bounds.getCenter(), {
-          icon: L.divIcon({
-            html:       '<span class="wf-icon">⚡</span>',
-            className:  '',
-            iconSize:   [22, 22],
-            iconAnchor: [11, 11],
-          }),
-          interactive: false,
+          icon,
+          interactive:  false,
           zIndexOffset: 500,
         }).addTo(map)
         markersRef.current.push(marker)
@@ -274,14 +347,19 @@ export default function App() {
   const [showPmarRaster,  setShowPmarRaster]  = useState(true)
   const [showWindFarms,   setShowWindFarms]   = useState(true)
 
-  // Wind farms use-layer state (lifted from PmarPanel)
+  // Use-layer state (lifted from PmarPanel)
   const [useSource,        setUseSource]        = useState('none')
   const [windfarmsPreview, setWindfarmsPreview] = useState(null)
   const [windfarmsLoading, setWindfarmsLoading] = useState(false)
   const [windfarmsEmpty,   setWindfarmsEmpty]   = useState(false)
+  const [offshorePreview,  setOffshorePreview]  = useState(null)
+  const [offshoreLoading,  setOffshoreLoading]  = useState(false)
+  const [offshoreEmpty,    setOffshoreEmpty]    = useState(false)
+  const [showOffshoreInstallations, setShowOffshoreInstallations] = useState(true)
 
   // Derived: prefer result from PMAR run, fall back to preview fetch
   const windfarmsGeoJSON = pmarData?.windfarms_geojson ?? windfarmsPreview
+  const offshoreGeoJSON  = pmarData?.offshore_geojson  ?? offshorePreview
 
   const timerRef = useRef(null)
 
@@ -313,6 +391,36 @@ export default function App() {
       })
       .catch(() => { setWindfarmsEmpty(true) })
       .finally(() => setWindfarmsLoading(false))
+  }, [useSource, seedShape])
+
+  // ── Offshore installations preview fetch ───────────────────────────────────
+  useEffect(() => {
+    if (useSource !== 'offshore_installations' || !seedShape) {
+      setOffshorePreview(null)
+      return
+    }
+    const bounds = seedShapeBounds(seedShape)
+    if (!bounds) return
+
+    setOffshorePreview(null)
+    setOffshoreEmpty(false)
+    setOffshoreLoading(true)
+    fetch('/processes/offshore_installations/execution', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ inputs: bounds }),
+    })
+      .then(r => r.json())
+      .then(raw => {
+        const data = raw.result ?? raw
+        if (data?.features?.length > 0) {
+          setOffshorePreview(data)
+        } else {
+          setOffshoreEmpty(true)
+        }
+      })
+      .catch(() => { setOffshoreEmpty(true) })
+      .finally(() => setOffshoreLoading(false))
   }, [useSource, seedShape])
 
   // ── Tool change ────────────────────────────────────────────────────────────
@@ -477,6 +585,22 @@ export default function App() {
     }
   }
 
+  // ── PMAR raster download (GeoTIFF EPSG:4326) ──────────────────────────────
+  function handleDownloadPmar() {
+    if (!pmarData?.geotiff_b64) return
+    const bytes = atob(pmarData.geotiff_b64)
+    const buf   = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i)
+    const blob  = new Blob([buf], { type: 'image/tiff' })
+    const url   = URL.createObjectURL(blob)
+    const a     = document.createElement('a')
+    a.href      = url
+    const src   = pmarData.use_source !== 'none' ? `_${pmarData.use_source}` : ''
+    a.download  = `pmar_${pmarData.pressure}_${pmarData.start_time}-${pmarData.end_time}_p${pmarData.pnum}${src}.tif`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div style={{ position: 'relative', height: '100vh' }}>
       <MapContainer
@@ -494,6 +618,7 @@ export default function App() {
         <SimLayer simData={simData} currentStep={currentStep} />
         <PmarLayer pmarData={pmarData} visible={showPmarRaster} />
         <WindFarmsLayer geojson={windfarmsGeoJSON} visible={showWindFarms} />
+        <OffshoreInstallationsLayer geojson={offshoreGeoJSON} visible={showOffshoreInstallations} />
         <SeedDrawer
           drawMode={drawMode}
           seedShape={seedShape}
@@ -517,9 +642,11 @@ export default function App() {
         activeTool={activeTool}
         onToolChange={handleToolChange}
         useSource={useSource}
-        onUseSourceChange={src => { setUseSource(src); setWindfarmsEmpty(false) }}
+        onUseSourceChange={src => { setUseSource(src); setWindfarmsEmpty(false); setOffshoreEmpty(false) }}
         windfarmsLoading={windfarmsLoading}
         windfarmsEmpty={windfarmsEmpty}
+        offshoreLoading={offshoreLoading}
+        offshoreEmpty={offshoreEmpty}
       />
 
       {pmarData && (
@@ -531,6 +658,10 @@ export default function App() {
           showWindFarms={showWindFarms}
           onToggleWindFarms={() => setShowWindFarms(v => !v)}
           hasWindFarms={!!windfarmsGeoJSON}
+          showOffshoreInstallations={showOffshoreInstallations}
+          onToggleOffshoreInstallations={() => setShowOffshoreInstallations(v => !v)}
+          hasOffshoreInstallations={!!offshoreGeoJSON}
+          onDownloadPmar={handleDownloadPmar}
           elevated={!!simData}
         />
       )}

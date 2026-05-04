@@ -4,12 +4,12 @@ import os
 
 import geopandas as gpd
 from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
-from processes.PMARProcess import _fetch_windfarms, EMODNET_CACHE_DIR
+from processes.PMARProcess import _fetch_offshore_installations, EMODNET_CACHE_DIR
 from processes.OpenDriftProcess import _LOG_DIR
 
-logger = logging.getLogger('windfarms_process')
+logger = logging.getLogger('offshore_installations_process')
 if not logger.handlers:
-    _fh = logging.FileHandler(os.path.join(_LOG_DIR, 'windfarms.log'))
+    _fh = logging.FileHandler(os.path.join(_LOG_DIR, 'offshore_installations.log'))
     _fh.setFormatter(logging.Formatter(
         '[%(asctime)sZ] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s',
         datefmt='%Y-%m-%dT%H:%M:%S',
@@ -20,13 +20,13 @@ if not logger.handlers:
 
 PROCESS_METADATA = {
     'version': '0.1.0',
-    'id': 'windfarms',
-    'title': {'en': 'Wind Farms Query'},
+    'id': 'offshore_installations',
+    'title': {'en': 'Offshore Installations Query'},
     'description': {
-        'en': 'Returns EMODnet offshore wind farm polygons for a given bounding box.'
+        'en': 'Returns EMODnet offshore installation features for a given bounding box.'
     },
     'jobControlOptions': ['sync-execute'],
-    'keywords': ['windfarms', 'emodnet', 'geojson'],
+    'keywords': ['offshore', 'installations', 'emodnet', 'geojson'],
     'inputs': {
         'lon_min': {'schema': {'type': 'number'}, 'minOccurs': 1, 'maxOccurs': 1},
         'lat_min': {'schema': {'type': 'number'}, 'minOccurs': 1, 'maxOccurs': 1},
@@ -35,14 +35,14 @@ PROCESS_METADATA = {
     },
     'outputs': {
         'result': {
-            'title': 'GeoJSON FeatureCollection of wind farms',
+            'title': 'GeoJSON FeatureCollection of offshore installations',
             'schema': {'type': 'object', 'contentMediaType': 'application/json'},
         }
     },
 }
 
 
-class WindfarmsProcessor(BaseProcessor):
+class OffshoreInstallationsProcessor(BaseProcessor):
 
     def __init__(self, processor_def):
         super().__init__(processor_def, PROCESS_METADATA)
@@ -57,16 +57,16 @@ class WindfarmsProcessor(BaseProcessor):
             raise ProcessorExecuteError(f'Parametri bbox non validi: {e}')
 
         study_area = [lon_min, lat_min, lon_max, lat_max]
-        logger.info(f'Windfarms query: bbox={study_area}')
+        logger.info(f'Offshore installations query: bbox={study_area}')
 
-        gdf = _fetch_windfarms(study_area, EMODNET_CACHE_DIR)
+        gdf = _fetch_offshore_installations(study_area, EMODNET_CACHE_DIR)
 
         if gdf.empty:
             return 'application/json', {'type': 'FeatureCollection', 'features': []}
 
-        geojson = json.loads(gdf[['geometry']].simplify(0.005).to_json())
-        logger.info(f'Windfarms restituiti: {len(gdf)} feature')
+        geojson = json.loads(gdf[['geometry']].to_json())
+        logger.info(f'Impianti offshore restituiti: {len(gdf)} feature')
         return 'application/json', geojson
 
     def __repr__(self):
-        return '<WindfarmsProcessor>'
+        return '<OffshoreInstallationsProcessor>'
