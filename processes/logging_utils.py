@@ -1,10 +1,11 @@
 import logging
 import os
+import time
 
 _ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOG_DIR = os.path.join(_ROOT, 'logs')
 
-_LOG_FORMAT = '[%(asctime)sZ] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s'
+_LOG_FORMAT = '[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s'
 _DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
 _MAX_LINES = 1000
 
@@ -48,7 +49,9 @@ def setup_logger(name, subdir, filename, max_lines=_MAX_LINES):
     log = logging.getLogger(name)
     if not log.handlers:
         fh = LineRotatingFileHandler(log_path, max_lines=max_lines)
-        fh.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
+        fmt = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
+        fmt.converter = time.localtime
+        fh.setFormatter(fmt)
         log.addHandler(fh)
         log.setLevel(logging.DEBUG)
         log.propagate = False

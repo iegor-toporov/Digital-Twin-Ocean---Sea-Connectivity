@@ -41,8 +41,9 @@ export const translations = {
       labelStart:    'Data inizio',
       labelDuration: 'Durata (giorni)',
       labelParticles:'Particelle',
-      labelRes:      'Risoluzione griglia',
-      sectionUse:    'Layer antropico',
+      labelRes:      'Risoluzione',
+      labelTimeStep: 'Time step',
+      sectionUse:    'Layer sorgente',
       useSources: {
         none:                    'Nessuno',
         windfarms:               'Parchi eolici',
@@ -55,6 +56,15 @@ export const translations = {
       btnRun:        '▶ Avvia analisi PMAR',
       btnRunning:    '⏳ Analisi in corso…',
       ncSizeHint:    '📦 Dimensione stimata file temporaneo: {size}',
+      modeCustomBtn:  '✏️ Personalizzato',
+      modeScenarioBtn:'📦 Scenario',
+      sectionScenario:'Scenario predefinito',
+      scenarioHint:   'Seleziona uno scenario pre-calcolato',
+      scenarioNotReady:'Scenario non ancora pre-calcolato. Esegui precompute_scenarios.py.',
+      scenarios: {
+        'adriatico_generic': 'Adriatico – Tracciante 2024',
+        'adriatico_plastic': 'Adriatico – Plastica 2024',
+      },
     },
 
     controls: {
@@ -74,6 +84,8 @@ export const translations = {
       showOffshore:        'Mostra impianti offshore',
       hideOffshore:        'Nascondi impianti offshore',
       downloadRaster:      'Scarica raster',
+      colorbarLabel:       'Passaggi / cella',
+      tooltipPassages:     'passaggi',
     },
 
     status: {
@@ -143,7 +155,8 @@ export const translations = {
       labelDuration: 'Duration (days)',
       labelParticles:'Particles',
       labelRes:      'Grid resolution',
-      sectionUse:    'Anthropogenic layer',
+      labelTimeStep: 'Time step',
+      sectionUse:    'Source layer',
       useSources: {
         none:                    'None',
         windfarms:               'Wind farms',
@@ -156,6 +169,15 @@ export const translations = {
       btnRun:        '▶ Run PMAR analysis',
       btnRunning:    '⏳ Analysis running…',
       ncSizeHint:    '📦 Estimated temp file size: {size}',
+      modeCustomBtn:  '✏️ Custom',
+      modeScenarioBtn:'📦 Scenario',
+      sectionScenario:'Pre-computed scenario',
+      scenarioHint:   'Select a pre-computed scenario',
+      scenarioNotReady:'Scenario not yet pre-computed. Run precompute_scenarios.py.',
+      scenarios: {
+        'adriatico_generic': 'Adriatic Sea – Tracer 2024',
+        'adriatico_plastic': 'Adriatic Sea – Plastic 2024',
+      },
     },
 
     controls: {
@@ -175,6 +197,8 @@ export const translations = {
       showOffshore:        'Show offshore installations',
       hideOffshore:        'Hide offshore installations',
       downloadRaster:      'Download raster',
+      colorbarLabel:       'Passages / cell',
+      tooltipPassages:     'passages',
     },
 
     status: {

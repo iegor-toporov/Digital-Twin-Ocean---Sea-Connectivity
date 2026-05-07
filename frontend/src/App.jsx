@@ -12,6 +12,40 @@ import './App.css'
 
 const STRANDED_STYLE = { color: '#ef4444', fillColor: '#fca5a5', weight: 2 }
 
+// ── PMAR colormap helpers (replica di Spectral_r + LogNorm di matplotlib) ──────
+const SPECTRAL_R = [
+  [94,  79,  162], // 0.0  #5e4fa2
+  [50,  136, 189], // 0.1  #3288bd
+  [102, 194, 165], // 0.2  #66c2a5
+  [171, 221, 164], // 0.3  #abdda4
+  [230, 245, 152], // 0.4  #e6f598
+  [255, 255, 191], // 0.5  #ffffbf
+  [254, 224, 139], // 0.6  #fee08b
+  [253, 174, 97],  // 0.7  #fdae61
+  [244, 109, 67],  // 0.8  #f46d43
+  [213, 62,  79],  // 0.9  #d53e4f
+  [158, 1,   66],  // 1.0  #9e0142
+]
+
+function spectralR(t) {
+  const n = SPECTRAL_R.length - 1
+  const i = Math.min(Math.floor(t * n), n - 1)
+  const f = t * n - i
+  const c0 = SPECTRAL_R[i], c1 = SPECTRAL_R[i + 1]
+  return [
+    Math.round(c0[0] + f * (c1[0] - c0[0])),
+    Math.round(c0[1] + f * (c1[1] - c0[1])),
+    Math.round(c0[2] + f * (c1[2] - c0[2])),
+  ]
+}
+
+function logNorm(val, vmin, vmax) {
+  if (val <= 0 || !isFinite(val)) return null
+  const logMin = Math.log10(Math.max(vmin, 1e-12))
+  const logMax = Math.log10(vmax)
+  return Math.max(0, Math.min(1, (Math.log10(val) - logMin) / (logMax - logMin)))
+}
+
 // ── Standard map-pin icon (reusable for all anthropogenic layers) ──────────────
 function createPinIcon(fillColor, strokeColor) {
   const svg = `<svg width="14" height="21" viewBox="0 0 14 21" xmlns="http://www.w3.org/2000/svg">
@@ -234,31 +268,119 @@ function WindFarmsLayer({ geojson, visible }) {
   return null
 }
 
-// ── PMAR raster overlay ───────────────────────────────────────────────────────
-function PmarLayer({ pmarData, visible }) {
-  const map        = useMap()
-  const overlayRef = useRef(null)
+// ── PMAR raster overlay (canvas layer con hover per cella) ───────────────────
+function PmarLayer({ pmarData, visible, passagesLabel }) {
+  const map          = useMap()
+  const canvasRef    = useRef(null)
+  const tooltipRef   = useRef(null)
+  const labelRef     = useRef(passagesLabel)
+  labelRef.current   = passagesLabel
 
   useEffect(() => {
-    overlayRef.current?.remove()
-    overlayRef.current = null
-    if (!pmarData?.image_b64 || !pmarData.bounds) return
+    if (!pmarData?.raster_values || !pmarData.bounds) return
 
-    const imgUrl = `data:image/png;base64,${pmarData.image_b64}`
-    const bounds = L.latLngBounds(pmarData.bounds)
-    overlayRef.current = L.imageOverlay(imgUrl, bounds, { opacity: 0.8, zIndex: 400 }).addTo(map)
-    map.fitBounds(bounds, { padding: [50, 50] })
+    const {
+      raster_values, vmin, vmax,
+      raster_lon_min, raster_lat_min, raster_res,
+      raster_nx, raster_ny,
+    } = pmarData
 
-    return () => overlayRef.current?.remove()
+    // Canvas nel overlayPane: viene trascinato con la mappa durante il pan
+    const canvas = L.DomUtil.create('canvas', 'leaflet-zoom-hide')
+    canvas.style.pointerEvents = 'none'
+    map.getPanes().overlayPane.appendChild(canvas)
+    canvasRef.current = canvas
+
+    // Tooltip sovrapposto al container della mappa
+    const tooltip = document.createElement('div')
+    tooltip.className = 'pmar-cell-tooltip'
+    tooltip.style.display = 'none'
+    map.getContainer().appendChild(tooltip)
+    tooltipRef.current = tooltip
+
+    function draw() {
+      const size   = map.getSize()
+      canvas.width  = size.x
+      canvas.height = size.y
+      // Allinea il canvas al pixel origin corrente della mappa
+      const origin = map.containerPointToLayerPoint([0, 0])
+      L.DomUtil.setPosition(canvas, origin)
+
+      const ctx = canvas.getContext('2d')
+      ctx.clearRect(0, 0, size.x, size.y)
+      const ox = origin.x, oy = origin.y
+
+      for (let row = 0; row < raster_ny; row++) {
+        const rowData = raster_values[row]
+        for (let col = 0; col < raster_nx; col++) {
+          const val = rowData[col]
+          if (!val || val <= 0) continue
+
+          // row 0 = sud (lat_min), aumenta verso nord
+          const lat = raster_lat_min + row * raster_res
+          const lon = raster_lon_min + col * raster_res
+          const half = raster_res / 2
+
+          const sw = map.latLngToLayerPoint([lat - half, lon - half])
+          const ne = map.latLngToLayerPoint([lat + half, lon + half])
+
+          const x = ne.x - ox, y = ne.y - oy
+          const w = sw.x - ne.x, h = sw.y - ne.y
+          if (x + w < 0 || y + h < 0 || x > size.x || y > size.y) continue
+
+          const t = logNorm(val, vmin, vmax)
+          if (t === null) continue
+          const [r, g, b] = spectralR(t)
+          ctx.fillStyle = `rgba(${r},${g},${b},0.82)`
+          ctx.fillRect(x, y, w, h)
+        }
+      }
+    }
+
+    function onMouseMove(e) {
+      const { lat, lng } = e.latlng
+      const col = Math.floor((lng - raster_lon_min + raster_res / 2) / raster_res)
+      const row = Math.floor((lat - raster_lat_min + raster_res / 2) / raster_res)
+
+      if (col >= 0 && col < raster_nx && row >= 0 && row < raster_ny) {
+        const val = raster_values[row][col]
+        if (val > 0) {
+          const latC = (raster_lat_min + row * raster_res).toFixed(3)
+          const lonC = (raster_lon_min + col * raster_res).toFixed(3)
+          const dispVal = val >= 1 ? Math.round(val) : val.toFixed(3)
+          tooltip.innerHTML =
+            `<b>${dispVal}</b> ${labelRef.current}` +
+            `<br><span>${latC}° N · ${lonC}° E</span>`
+          tooltip.style.display = 'block'
+          tooltip.style.left = (e.containerPoint.x + 14) + 'px'
+          tooltip.style.top  = (e.containerPoint.y - 44) + 'px'
+          return
+        }
+      }
+      tooltip.style.display = 'none'
+    }
+
+    map.on('moveend zoomend resize', draw)
+    map.on('mousemove', onMouseMove)
+    map.on('mouseout',  () => { tooltip.style.display = 'none' })
+    map.fitBounds(L.latLngBounds(pmarData.bounds), { padding: [50, 50] })
+    draw()
+
+    return () => {
+      map.getPanes().overlayPane.removeChild(canvas)
+      map.getContainer().removeChild(tooltip)
+      map.off('moveend zoomend resize', draw)
+      map.off('mousemove', onMouseMove)
+      canvasRef.current  = null
+      tooltipRef.current = null
+    }
   }, [pmarData, map])
 
   useEffect(() => {
-    if (!overlayRef.current) return
-    if (visible) {
-      overlayRef.current.setOpacity(0.8)
-    } else {
-      overlayRef.current.setOpacity(0)
-    }
+    if (canvasRef.current)
+      canvasRef.current.style.display = visible ? '' : 'none'
+    if (!visible && tooltipRef.current)
+      tooltipRef.current.style.display = 'none'
   }, [visible])
 
   return null
@@ -525,13 +647,29 @@ export default function App() {
   }
 
   // ── PMAR run ───────────────────────────────────────────────────────────────
-  async function handleRunPmar({ pressure, start_time, duration_days, pnum, res, shapefile_b64 }) {
-    const geojson = shapefile_b64 ? null : seedShapeToGeoJSON(seedShape)
+  async function handleRunPmar({ scenario_id, pressure, start_time, duration_days, pnum, res, time_step_hours, shapefile_b64 }) {
+    let inputs
 
-    if (!geojson && !shapefile_b64) {
-      setPmarStatus(t.status.noShape)
-      setPmarStatusType('error')
-      return
+    if (scenario_id) {
+      inputs = { scenario_id, use_source: useSource, res }
+    } else {
+      const geojson = shapefile_b64 ? null : seedShapeToGeoJSON(seedShape)
+      if (!geojson && !shapefile_b64) {
+        setPmarStatus(t.status.noShape)
+        setPmarStatusType('error')
+        return
+      }
+      inputs = {
+        pressure,
+        use_source: useSource,
+        start_time,
+        duration_days,
+        pnum,
+        res,
+        time_step_hours,
+        ...(geojson       ? { geojson: JSON.stringify(geojson) } : {}),
+        ...(shapefile_b64 ? { shapefile_b64 }                    : {}),
+      }
     }
 
     setPmarLoading(true)
@@ -540,16 +678,6 @@ export default function App() {
     setPmarStatusType('')
 
     try {
-      const inputs = {
-        pressure,
-        use_source: useSource,
-        start_time,
-        duration_days,
-        pnum,
-        res,
-        ...(geojson       ? { geojson: JSON.stringify(geojson) } : {}),
-        ...(shapefile_b64 ? { shapefile_b64 }                    : {}),
-      }
 
       const resp = await fetch('/processes/pmar/execution', {
         method:  'POST',
@@ -570,7 +698,7 @@ export default function App() {
       const raw  = await resp.json()
       const data = raw.result ?? raw
 
-      if (!data.image_b64 || !data.bounds) throw new Error(t.status.badResponse)
+      if (!data.raster_values || !data.bounds) throw new Error(t.status.badResponse)
 
       const label = lang === 'it' ? data.label_it : data.label_en
       setPmarData(data)
@@ -616,7 +744,7 @@ export default function App() {
           maxZoom={19}
         />
         <SimLayer simData={simData} currentStep={currentStep} />
-        <PmarLayer pmarData={pmarData} visible={showPmarRaster} />
+        <PmarLayer pmarData={pmarData} visible={showPmarRaster} passagesLabel={t.pmarControls.tooltipPassages} />
         <WindFarmsLayer geojson={windfarmsGeoJSON} visible={showWindFarms} />
         <OffshoreInstallationsLayer geojson={offshoreGeoJSON} visible={showOffshoreInstallations} />
         <SeedDrawer
@@ -648,6 +776,17 @@ export default function App() {
         offshoreLoading={offshoreLoading}
         offshoreEmpty={offshoreEmpty}
       />
+
+      {pmarData?.colorbar_b64 && showPmarRaster && (
+        <div className="pmar-colorbar">
+          <span className="pmar-colorbar-label">{t.pmarControls.colorbarLabel}</span>
+          <img
+            src={`data:image/png;base64,${pmarData.colorbar_b64}`}
+            alt="colorbar"
+            className="pmar-colorbar-img"
+          />
+        </div>
+      )}
 
       {pmarData && (
         <PmarControls

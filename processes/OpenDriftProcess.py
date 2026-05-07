@@ -20,8 +20,11 @@ from processes.logging_utils import setup_logger
 logger = setup_logger('opendrift_process', 'opendrift', 'opendrift.log')
 
 # ── Dataset CMEMS per correnti (usati da tutti i modelli) ────────────────────
-CMEMS_CURRENT_DATASETS = [
+CMEMS_CURRENT_DATASETS_HOURLY = [
     {'dataset_id': 'cmems_mod_med_phy-cur_anfc_0.042deg_PT1H-m', 'variables': ['uo', 'vo']},
+    {'dataset_id': 'cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m',  'variables': ['uo', 'vo']},
+]
+CMEMS_CURRENT_DATASETS_DAILY = [
     {'dataset_id': 'cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m',  'variables': ['uo', 'vo']},
 ]
 
@@ -304,15 +307,19 @@ def _cache_key(lon, lat, start_time, end_time, suffix='cur'):
     )
 
 
-def _get_forcing_file(lon, lat, start_time, end_time):
+def _get_forcing_file(lon, lat, start_time, end_time, time_step_hours=1):
+    suffix = 'cur_d' if time_step_hours >= 24 else 'cur'
     cache_path, snap_lon, snap_lat, snap_start, n_days = _cache_key(
-        lon, lat, start_time, end_time, suffix='cur'
+        lon, lat, start_time, end_time, suffix=suffix
     )
     if os.path.exists(cache_path):
         logger.debug(f'Cache correnti: HIT — {os.path.basename(cache_path)}')
     else:
-        logger.info(f'Cache correnti: MISS — avvio download ({n_days} giorni)')
-        _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path)
+        logger.info(
+            f'Cache correnti: MISS — avvio download ({n_days} giorni, '
+            f'{"giornaliero" if time_step_hours >= 24 else "orario"})'
+        )
+        _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path, time_step_hours)
     return cache_path
 
 
@@ -333,7 +340,7 @@ def _get_wind_file(lon, lat, start_time, end_time):
 
 
 def _build_bbox(snap_lon, snap_lat, snap_start, n_days):
-    margin   = 5.0 + math.log(n_days + 1) * 0.3
+    margin   = 5.0
     snap_end = snap_start + timedelta(days=n_days)
     return dict(
         minimum_longitude = snap_lon - margin,
@@ -346,12 +353,14 @@ def _build_bbox(snap_lon, snap_lat, snap_start, n_days):
         end_datetime      = snap_end.strftime('%Y-%m-%dT%H:%M:%S'),
     )
 
-def _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path):
+def _download_currents(snap_lon, snap_lat, snap_start, n_days, cache_path, time_step_hours=1):
     import copernicusmarine
-    logger.info(f'Download correnti CMEMS — {snap_start.date()} +{n_days}d → {os.path.basename(cache_path)}')
+    datasets = CMEMS_CURRENT_DATASETS_DAILY if time_step_hours >= 24 else CMEMS_CURRENT_DATASETS_HOURLY
+    freq_label = 'giornaliero' if time_step_hours >= 24 else 'orario'
+    logger.info(f'Download correnti CMEMS ({freq_label}) — {snap_start.date()} +{n_days}d → {os.path.basename(cache_path)}')
     bbox     = _build_bbox(snap_lon, snap_lat, snap_start, n_days)
     last_err = None
-    for ds in CMEMS_CURRENT_DATASETS:
+    for ds in datasets:
         try:
             copernicusmarine.subset(
                 dataset_id       = ds['dataset_id'],

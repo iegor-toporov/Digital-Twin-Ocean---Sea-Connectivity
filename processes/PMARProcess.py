@@ -1,7 +1,6 @@
 import base64
 import math
 import glob
-import importlib
 import io
 import json
 import logging
@@ -20,10 +19,42 @@ import geopandas as gpd
 from datetime import datetime, timedelta
 
 from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
-from processes.OpenDriftProcess import _get_forcing_file, _get_wind_file, _LOG_DIR, OUT_DIR, CACHE_DIR
+from processes.OpenDriftProcess import _get_forcing_file, _get_wind_file, _build_model, _ROOT, _LOG_DIR, OUT_DIR, CACHE_DIR
 
 EMODNET_CACHE_DIR = os.path.join(CACHE_DIR, 'emodnet')
 os.makedirs(EMODNET_CACHE_DIR, exist_ok=True)
+
+SCENARIOS_DIR     = os.path.join(_ROOT, 'scenarios')
+SCENARIOS_SHP_DIR = os.path.join(SCENARIOS_DIR, 'shapefiles')
+os.makedirs(SCENARIOS_DIR,     exist_ok=True)
+os.makedirs(SCENARIOS_SHP_DIR, exist_ok=True)
+
+SCENARIOS = {
+    'adriatico_generic': {
+        'label_it':        'Adriatico – Tracciante 2024',
+        'label_en':        'Adriatic Sea – Tracer 2024',
+        'shapefile':       os.path.join(SCENARIOS_SHP_DIR, 'adriatico.shp'),
+        'pressure':        'generic',
+        'pnum':            100000,
+        'duration_days':   365,
+        'time_step_hours': 24,
+        'start_time':      '2024-04-27T00:00:00',
+        'res':             0.05,
+        'nc_filename':     'adriatico_generic_20240427_365d.nc',
+    },
+    'adriatico_plastic': {
+        'label_it':        'Adriatico – Plastica 2024',
+        'label_en':        'Adriatic Sea – Plastic 2024',
+        'shapefile':       os.path.join(SCENARIOS_SHP_DIR, 'adriatico.shp'),
+        'pressure':        'plastic',
+        'pnum':            100000,
+        'duration_days':   365,
+        'time_step_hours': 24,
+        'start_time':      '2024-04-27T00:00:00',
+        'res':             0.05,
+        'nc_filename':     'adriatico_plastic_20240427_365d.nc',
+    },
+}
 
 from processes.logging_utils import setup_logger
 logger = setup_logger('pmar_process', 'pmar', 'pmar.log')
@@ -100,10 +131,22 @@ PROCESS_METADATA = {
             'schema': {'type': 'number', 'default': 0.1},
             'minOccurs': 0, 'maxOccurs': 1,
         },
+        'time_step_hours': {
+            'title': 'Simulation time step (hours)',
+            'description': 'Integration and output step in hours. 1 = hourly (default), 24 = daily.',
+            'schema': {'type': 'integer', 'default': 1},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
         'use_source': {
             'title': 'Anthropogenic use layer',
             'description': '"none" (default), "windfarms" or "offshore_installations" (EMODnet Human Activities).',
             'schema': {'type': 'string', 'default': 'none'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'scenario_id': {
+            'title': 'Pre-computed scenario ID',
+            'description': 'If set, skip simulation and use the cached trajectory NC file.',
+            'schema': {'type': 'string'},
             'minOccurs': 0, 'maxOccurs': 1,
         },
     },
@@ -131,79 +174,130 @@ class PMARProcessor(BaseProcessor):
         os.environ.pop('PROJ_LIB', None)
         os.environ.pop('PROJ_DATA', None)
 
-        geojson_input = data.get('geojson')
-        shapefile_b64 = data.get('shapefile_b64')
-        pressure      = data.get('pressure', 'generic')
-        duration_days = int(data.get('duration_days', 3))
-        pnum          = min(int(data.get('pnum', 200)), 100000)
-        res           = float(data.get('res', 0.1))
-        use_source    = data.get('use_source', 'none')
-
-        if pressure not in PRESSURE_MODELS:
-            raise ProcessorExecuteError(
-                f'Unknown pressure "{pressure}". '
-                f'Available: {", ".join(PRESSURE_MODELS)}'
-            )
-
-        start_time_str = data.get('start_time')
-        if start_time_str:
-            try:
-                start_time = datetime.fromisoformat(start_time_str)
-            except ValueError:
-                raise ProcessorExecuteError(
-                    f'Invalid start_time: {start_time_str!r}. Use ISO 8601.'
-                )
-        else:
-            start_time = datetime.utcnow() - timedelta(days=10)
-
-        end_time = start_time + timedelta(days=duration_days)
+        scenario_id = data.get('scenario_id')
+        use_source  = data.get('use_source', 'none')
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            shp_path = _resolve_shapefile(geojson_input, shapefile_b64, tmpdir)
 
-            gdf    = gpd.read_file(shp_path).to_crs('EPSG:4326')
-            bounds = gdf.total_bounds   # [minx, miny, maxx, maxy]
-            lon_c  = float((bounds[0] + bounds[2]) / 2)
-            lat_c  = float((bounds[1] + bounds[3]) / 2)
-
-            logger.info(
-                f'PMAR: pressure={pressure}, pnum={pnum}, '
-                f'duration={duration_days}d, start={start_time.isoformat()}, '
-                f'bounds={bounds.tolist()}'
-            )
-
-            forcing_paths = [_get_forcing_file(lon_c, lat_c, start_time, end_time)]
-
-            pm = PRESSURE_MODELS[pressure]
-            if pm['needs_wind']:
-                wind_path = _get_wind_file(lon_c, lat_c, start_time, end_time)
-                if wind_path:
-                    forcing_paths.append(wind_path)
-                else:
-                    logger.warning(f'Vento non disponibile per {pressure}: simulazione solo a correnti')
-
-            logger.debug(f'Forcing files: {forcing_paths}')
-
-            module = importlib.import_module(pm['module'])
-            cls    = getattr(module, pm['class'])
-            o      = cls(loglevel=50)
-            o.set_config('general:coastline_action', 'stranding')
-            o.add_readers_from_list(forcing_paths)
-
-            nc_output = os.path.join(OUT_DIR, f'pmar_{uuid.uuid4().hex}.nc')
-            try:
-                o.seed_from_shapefile(shapefile=shp_path, number=pnum, time=start_time)
-                o.run(
-                    duration=timedelta(days=duration_days),
-                    time_step=3600,
-                    outfile=nc_output,
+            # ── Scenario mode: usa traiettorie pre-calcolate ──────────────
+            if scenario_id:
+                if scenario_id not in SCENARIOS:
+                    raise ProcessorExecuteError(f'Scenario sconosciuto: {scenario_id!r}')
+                sc        = SCENARIOS[scenario_id]
+                nc_output = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
+                if not os.path.exists(nc_output):
+                    raise ProcessorExecuteError(
+                        f'Scenario "{scenario_id}" non ancora pre-calcolato. '
+                        f'Esegui prima: python processes/precompute_scenarios.py'
+                    )
+                pressure   = sc['pressure']
+                res        = float(data.get('res', sc['res']))
+                start_time = datetime.fromisoformat(sc['start_time'])
+                end_time   = start_time + timedelta(days=sc['duration_days'])
+                pnum       = sc['pnum']
+                gdf        = gpd.read_file(sc['shapefile']).to_crs('EPSG:4326')
+                bounds     = gdf.total_bounds
+                logger.info(
+                    f'Scenario: id={scenario_id}, use_source={use_source}, '
+                    f'res={res}, nc={sc["nc_filename"]}'
                 )
 
+            # ── Custom mode: simula e poi analizza ────────────────────────
+            else:
+                geojson_input   = data.get('geojson')
+                shapefile_b64   = data.get('shapefile_b64')
+                pressure        = data.get('pressure', 'generic')
+                duration_days   = int(data.get('duration_days', 3))
+                pnum            = min(int(data.get('pnum', 200)), 100000)
+                res             = float(data.get('res', 0.1))
+                time_step_hours = int(data.get('time_step_hours', 1))
+                time_step_hours = max(1, min(time_step_hours, 24))
+
+                if pressure not in PRESSURE_MODELS:
+                    raise ProcessorExecuteError(
+                        f'Unknown pressure "{pressure}". '
+                        f'Available: {", ".join(PRESSURE_MODELS)}'
+                    )
+
+                start_time_str = data.get('start_time')
+                if start_time_str:
+                    try:
+                        start_time = datetime.fromisoformat(start_time_str)
+                    except ValueError:
+                        raise ProcessorExecuteError(
+                            f'Invalid start_time: {start_time_str!r}. Use ISO 8601.'
+                        )
+                else:
+                    start_time = datetime.utcnow() - timedelta(days=10)
+
+                end_time = start_time + timedelta(days=duration_days)
+
+                shp_path = _resolve_shapefile(geojson_input, shapefile_b64, tmpdir)
+                gdf      = gpd.read_file(shp_path).to_crs('EPSG:4326')
+                bounds   = gdf.total_bounds
+                lon_c    = float((bounds[0] + bounds[2]) / 2)
+                lat_c    = float((bounds[1] + bounds[3]) / 2)
+
+                logger.info(
+                    f'PMAR: pressure={pressure}, pnum={pnum}, '
+                    f'duration={duration_days}d, time_step={time_step_hours}h, '
+                    f'start={start_time.isoformat()}, bounds={bounds.tolist()}'
+                )
+
+                pm_cfg = PRESSURE_MODELS[pressure]
+                forcing_paths = [_get_forcing_file(lon_c, lat_c, start_time, end_time, time_step_hours)]
+                if pm_cfg['needs_wind']:
+                    wind_path = _get_wind_file(lon_c, lat_c, start_time, end_time)
+                    if wind_path:
+                        forcing_paths.append(wind_path)
+                    else:
+                        logger.warning(f'Vento non disponibile per {pressure}: simulazione solo a correnti')
+
+                logger.debug(f'Forcing files: {forcing_paths}')
+
+                o = _build_model(pm_cfg['class'], pm_cfg)
+                o.set_config('general:coastline_action', 'stranding')
+                o.add_readers_from_list(forcing_paths)
+
+                nc_output = os.path.join(OUT_DIR, f'pmar_{uuid.uuid4().hex}.nc')
+                try:
+                    o.seed_from_shapefile(shapefile=shp_path, number=pnum, time=start_time)
+                    ts = timedelta(hours=time_step_hours)
+                    logger.info(
+                        f'Avvio simulazione: model={pm_cfg["class"]}, pnum={pnum}, '
+                        f'duration={duration_days}d, time_step={time_step_hours}h'
+                    )
+                    _t0 = _time.monotonic()
+                    o.run(
+                        duration=timedelta(days=duration_days),
+                        time_step=ts,
+                        time_step_output=ts,
+                        outfile=nc_output,
+                    )
+                    _elapsed = (_time.monotonic() - _t0) / 60
+                    logger.info(f'Fine simulazione. Ci ha messo {_elapsed:.1f} minuti')
+                except ValueError as e:
+                    logger.error(f'PMAR fallita: {e}', exc_info=True)
+                    if 'first timestep' in str(e):
+                        raise ProcessorExecuteError(
+                            "Nessun dato CMEMS nell'area selezionata. "
+                            "Sposta l'area in mare aperto."
+                        )
+                    raise ProcessorExecuteError(str(e))
+                except Exception as e:
+                    logger.error(f'PMAR fallita: {e}', exc_info=True)
+                    raise ProcessorExecuteError(str(e))
+                finally:
+                    pass  # DEBUG: pulizia NC disabilitata temporaneamente
+
+            # ── Analisi PMAR (comune a entrambe le modalità) ──────────────
+            pm = PRESSURE_MODELS[pressure]
+            try:
                 pmar_basedir = os.path.join(tmpdir, 'pmar_out')
                 p = PMAR(context=None, pressure=pressure, basedir=pmar_basedir, loglevel=50)
                 p.ds = xr.open_dataset(nc_output)
 
-                margin     = max(1.0, math.log(duration_days + 1) * 0.5)
+                margin     = 1.0
                 study_area = [
                     float(bounds[0]) - margin, float(bounds[1]) - margin,
                     float(bounds[2]) + margin, float(bounds[3]) + margin,
@@ -211,10 +305,9 @@ class PMARProcessor(BaseProcessor):
                 p.study_area = study_area
                 p.grid       = make_grid(res=res, study_area=study_area)
 
-                # ── Use layer (pesi attività antropiche) ──────────────────────
-                use_raster    = None
-                use_geojson   = None
-                use_weighted  = False
+                use_raster   = None
+                use_geojson  = None
+                use_weighted = False
 
                 if use_source == 'windfarms':
                     logger.info('Recupero wind farms da EMODnet...')
@@ -228,10 +321,10 @@ class PMARProcessor(BaseProcessor):
                             )
                             logger.info(f'Wind farms raster pronto: {len(gdf_wf)} feature')
                         else:
-                            logger.warning('Nessuna wind farm sovrapposta all\'area di seeding')
+                            logger.warning("Nessuna wind farm sovrapposta all'area di seeding")
                             use_raster = None
                     else:
-                        logger.warning('Nessuna wind farm trovata nell\'area di studio')
+                        logger.warning("Nessuna wind farm trovata nell'area di studio")
 
                 elif use_source == 'offshore_installations':
                     logger.info('Recupero impianti offshore da EMODnet...')
@@ -240,15 +333,13 @@ class PMARProcessor(BaseProcessor):
                         use_raster = _gdf_to_use_raster(gdf_oi, p.grid)
                         if float(use_raster.max()) > 0:
                             use_weighted = True
-                            use_geojson  = json.loads(
-                                gdf_oi[['geometry']].to_json()
-                            )
+                            use_geojson  = json.loads(gdf_oi[['geometry']].to_json())
                             logger.info(f'Impianti offshore raster pronto: {len(gdf_oi)} feature')
                         else:
                             logger.warning("Nessun impianto offshore sovrapposto all'area di seeding")
                             use_raster = None
                     else:
-                        logger.warning('Nessun impianto offshore trovato nell\'area di studio')
+                        logger.warning("Nessun impianto offshore trovato nell'area di studio")
 
                 if use_weighted:
                     p.set_weights(res=res, study_area=study_area, use=use_raster, normalize=True)
@@ -261,8 +352,12 @@ class PMARProcessor(BaseProcessor):
                     block_size=len(p.ds.time),
                 )
 
-                img_b64, map_bounds = _raster_to_png(h)
+                map_bounds, colorbar_b64, vmin, vmax = _raster_to_png(h)
                 geotiff_b64 = _histogram_to_geotiff(h)
+
+                x_vals    = h.coords['x'].values
+                y_vals    = h.coords['y'].values
+                arr_clean = np.where(np.isfinite(h.values) & (h.values > 0), h.values, 0.0)
 
                 logger.info(
                     f'PMAR completato: particles={pnum}, steps={len(p.ds.time)}, '
@@ -270,18 +365,27 @@ class PMARProcessor(BaseProcessor):
                 )
 
                 result = {
-                    'type':        'raster',
-                    'image_b64':   img_b64,
-                    'geotiff_b64': geotiff_b64,
-                    'bounds':      map_bounds,
-                    'pressure':    pressure,
-                    'label_it':    pm['label_it'],
-                    'label_en':    pm['label_en'],
-                    'use_source':  use_source,
-                    'use_weighted': use_weighted,
-                    'start_time':  start_time.strftime('%Y%m%d'),
-                    'end_time':    end_time.strftime('%Y%m%d'),
-                    'pnum':        pnum,
+                    'type':           'raster',
+                    'raster_values':  np.round(arr_clean, 3).tolist(),
+                    'raster_lon_min': float(x_vals.min()),
+                    'raster_lat_min': float(y_vals.min()),
+                    'raster_res':     float(res),
+                    'raster_nx':      int(len(x_vals)),
+                    'raster_ny':      int(len(y_vals)),
+                    'vmin':           float(vmin),
+                    'vmax':           float(vmax),
+                    'colorbar_b64':   colorbar_b64,
+                    'geotiff_b64':    geotiff_b64,
+                    'bounds':         map_bounds,
+                    'pressure':       pressure,
+                    'label_it':       pm['label_it'],
+                    'label_en':       pm['label_en'],
+                    'use_source':     use_source,
+                    'use_weighted':   use_weighted,
+                    'start_time':     start_time.strftime('%Y%m%d'),
+                    'end_time':       end_time.strftime('%Y%m%d'),
+                    'pnum':           pnum,
+                    'scenario_id':    scenario_id,
                 }
                 if use_geojson:
                     if use_source == 'windfarms':
@@ -292,21 +396,11 @@ class PMARProcessor(BaseProcessor):
                 return 'application/json', result
 
             except ValueError as e:
-                logger.error(f'PMAR fallita: {e}')
-                if 'first timestep' in str(e):
-                    raise ProcessorExecuteError(
-                        "Nessun dato CMEMS nell'area selezionata. "
-                        "Sposta l'area in mare aperto."
-                    )
+                logger.error(f'PMAR fallita (analisi): {e}', exc_info=True)
                 raise ProcessorExecuteError(str(e))
             except Exception as e:
-                logger.error(f'PMAR fallita: {e}')
+                logger.error(f'PMAR fallita (analisi): {e}', exc_info=True)
                 raise ProcessorExecuteError(str(e))
-            finally:
-                try:
-                    os.remove(nc_output)
-                except OSError:
-                    pass
 
     def __repr__(self):
         return '<PMARProcessor>'
@@ -388,19 +482,19 @@ def _histogram_to_geotiff(h):
 
 def _raster_to_png(h):
     """
-    Convert a PMAR histogram DataArray (y=lat, x=lon) to a base64 PNG
-    and the corresponding Leaflet-format bounds [[lat_min, lon_min], [lat_max, lon_max]].
+    Compute colormap bounds (vmin/vmax), generate a vertical colorbar PNG,
+    and return Leaflet-format cell-edge bounds. The raster is rendered client-side.
+    Returns (map_bounds, colorbar_b64, vmin, vmax).
     """
-    arr = h.values.astype(float)  # shape (ny, nx)
+    import matplotlib.ticker as ticker
 
-    # Flip vertically: L.imageOverlay expects row 0 = north (max lat)
-    arr_plot  = np.flipud(arr)
-    valid_mask = (arr_plot > 0) & np.isfinite(arr_plot)
+    arr        = h.values.astype(float)
+    valid_mask = (arr > 0) & np.isfinite(arr)
 
     if not valid_mask.any():
-        return '', None
+        return None, '', 0.0, 0.0
 
-    valid = arr_plot[valid_mask]
+    valid = arr[valid_mask]
     vmin  = max(float(np.percentile(valid, 2)), 1e-12)
     vmax  = float(np.percentile(valid, 98))
     if vmax <= vmin:
@@ -412,41 +506,42 @@ def _raster_to_png(h):
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     cmap = plt.get_cmap('Spectral_r').copy()
-    cmap.set_bad(alpha=0)
 
-    masked_arr = np.ma.masked_where(~valid_mask, arr_plot)
-    ny, nx = arr_plot.shape
+    # ── Colorbar ─────────────────────────────────────────────────────────────
+    fig_cb = plt.figure(figsize=(0.65, 2.8), dpi=150)
+    cb_ax  = fig_cb.add_axes([0.18, 0.06, 0.38, 0.88])
+    sm     = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cb = fig_cb.colorbar(sm, cax=cb_ax)
+    cb.ax.tick_params(colors='white', labelsize=6.5, length=3, width=0.5, pad=2)
+    cb.outline.set_edgecolor('white')
+    cb.outline.set_linewidth(0.5)
+    cb.outline.set_alpha(0.5)
+    cb.ax.yaxis.set_major_formatter(
+        ticker.FuncFormatter(lambda x, _: f'{x:.3g}')
+    )
+    for lbl in cb.ax.get_yticklabels():
+        lbl.set_color('white')
+        lbl.set_fontsize(6.5)
 
-    fig = plt.figure(figsize=(max(nx / 100, 2), max(ny / 100, 2)), dpi=300)
-    ax  = fig.add_axes([0, 0, 1, 1])
-    ax.set_axis_off()
-    ax.imshow(masked_arr, aspect='auto', cmap=cmap, norm=norm,
-              interpolation='bilinear', origin='upper')
+    buf_cb = io.BytesIO()
+    fig_cb.savefig(buf_cb, format='png', dpi=150, transparent=True,
+                   bbox_inches='tight', pad_inches=0.05)
+    plt.close(fig_cb)
+    buf_cb.seek(0)
+    colorbar_b64 = base64.b64encode(buf_cb.getvalue()).decode('utf-8')
 
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=300, bbox_inches='tight',
-                pad_inches=0, transparent=True)
-    plt.close(fig)
-    buf.seek(0)
-    img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    # ── Bounds (cell edges, not centres) ─────────────────────────────────────
+    x_vals = h.coords['x'].values
+    y_vals = h.coords['y'].values
+    dx = float(x_vals[1] - x_vals[0]) if len(x_vals) > 1 else 0.1
+    dy = float(y_vals[1] - y_vals[0]) if len(y_vals) > 1 else 0.1
+    map_bounds = [
+        [float(y_vals.min()) - dy / 2, float(x_vals.min()) - dx / 2],
+        [float(y_vals.max()) + dy / 2, float(x_vals.max()) + dx / 2],
+    ]
 
-    x_vals = h.coords['x'].values  # type: ignore[index]
-    y_vals = h.coords['y'].values  # type: ignore[index]
-
-    lat_min = float(y_vals.min())
-    lat_max = float(y_vals.max())
-    lon_min = float(x_vals.min())
-    lon_max = float(x_vals.max())
-
-    if len(x_vals) > 1:
-        dx = float(x_vals[1] - x_vals[0])
-        lon_max += dx
-    if len(y_vals) > 1:
-        dy = float(y_vals[1] - y_vals[0])
-        lat_max += dy
-
-    map_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
-    return img_b64, map_bounds
+    return map_bounds, colorbar_b64, vmin, vmax
 
 
 def _fetch_windfarms(study_area, cache_dir):
