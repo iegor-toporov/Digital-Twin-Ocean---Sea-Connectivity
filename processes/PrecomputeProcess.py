@@ -9,7 +9,10 @@ from shapely.geometry import Polygon
 
 from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
 
-from processes.PMARProcess import SCENARIOS, SCENARIOS_DIR, SCENARIOS_SHP_DIR, PRESSURE_MODELS
+from processes.PMARProcess import (
+    SCENARIOS, SCENARIOS_DIR, SCENARIOS_SHP_DIR, PRESSURE_MODELS,
+    get_t4msp_scenarios, ensure_t4msp_shapefile,
+)
 from processes.OpenDriftProcess import _get_forcing_file, _get_wind_file, _build_model, OUT_DIR
 from processes.logging_utils import setup_logger
 
@@ -64,8 +67,7 @@ def _ensure_shapefiles():
             logger.info(f'Shapefile già presente: {filename}')
 
 
-def _run_scenario(scenario_id):
-    sc = SCENARIOS[scenario_id]
+def _run_scenario(scenario_id, sc, shp_path):
     nc_output = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
 
     if os.path.exists(nc_output):
@@ -81,7 +83,7 @@ def _run_scenario(scenario_id):
     duration_days   = sc['duration_days']
     time_step_hours = sc['time_step_hours']
 
-    gdf    = gpd.read_file(sc['shapefile']).to_crs('EPSG:4326')
+    gdf    = gpd.read_file(shp_path).to_crs('EPSG:4326')
     bounds = gdf.total_bounds
     lon_c  = float((bounds[0] + bounds[2]) / 2)
     lat_c  = float((bounds[1] + bounds[3]) / 2)
@@ -108,7 +110,7 @@ def _run_scenario(scenario_id):
 
     tmp_nc = os.path.join(OUT_DIR, f'precompute_{uuid.uuid4().hex}.nc')
     try:
-        o.seed_from_shapefile(shapefile=sc['shapefile'], number=pnum, time=start_time)
+        o.seed_from_shapefile(shapefile=shp_path, number=pnum, time=start_time)
         ts = timedelta(hours=time_step_hours)
         logger.info(
             f'[{scenario_id}] Run: model={pm_cfg["class"]}, pnum={pnum}, '
@@ -143,7 +145,18 @@ class PrecomputeProcessor(BaseProcessor):
         scenario_id = data.get('scenario_id')
         if not scenario_id:
             raise ProcessorExecuteError('scenario_id è obbligatorio.')
-        if scenario_id not in SCENARIOS:
+
+        # Risolvi config e shapefile in base al tipo di scenario
+        if scenario_id in SCENARIOS:
+            sc           = SCENARIOS[scenario_id]
+            is_t4msp     = False
+        elif scenario_id.startswith('t4msp_'):
+            t4msp_sc = get_t4msp_scenarios()
+            if scenario_id not in t4msp_sc:
+                raise ProcessorExecuteError(f'Scenario T4MSP sconosciuto: {scenario_id!r}')
+            sc       = t4msp_sc[scenario_id]
+            is_t4msp = True
+        else:
             raise ProcessorExecuteError(
                 f'Scenario sconosciuto: {scenario_id!r}. '
                 f'Disponibili: {list(SCENARIOS.keys())}'
@@ -155,15 +168,18 @@ class PrecomputeProcessor(BaseProcessor):
             raise ProcessorExecuteError('Un pre-calcolo è già in corso. Riprova al termine.')
 
         try:
-            _ensure_shapefiles()
-            _run_scenario(scenario_id)
+            if is_t4msp:
+                shp_path = ensure_t4msp_shapefile(sc['t4msp_area_id'])
+            else:
+                _ensure_shapefiles()
+                shp_path = sc['shapefile']
+            _run_scenario(scenario_id, sc, shp_path)
         except Exception as e:
             logger.error(f'[PrecomputeProcess] Errore nel pre-calcolo di {scenario_id}: {e}', exc_info=True)
             raise ProcessorExecuteError(str(e))
         finally:
             _precompute_lock.release()
 
-        sc = SCENARIOS[scenario_id]
         nc_path = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
 
         logger.info(f'[PrecomputeProcess] Pre-calcolo completato: {sc["nc_filename"]}')

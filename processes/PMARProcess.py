@@ -33,6 +33,8 @@ SCENARIOS = {
     'adriatico_generic': {
         'label_it':        'Adriatico – Tracciante 2024',
         'label_en':        'Adriatic Sea – Tracer 2024',
+        'area_it':         'Mar Adriatico',
+        'area_en':         'Adriatic Sea',
         'shapefile':       os.path.join(SCENARIOS_SHP_DIR, 'adriatico.shp'),
         'pressure':        'generic',
         'pnum':            100000,
@@ -45,6 +47,8 @@ SCENARIOS = {
     'adriatico_plastic': {
         'label_it':        'Adriatico – Plastica 2024',
         'label_en':        'Adriatic Sea – Plastic 2024',
+        'area_it':         'Mar Adriatico',
+        'area_en':         'Adriatic Sea',
         'shapefile':       os.path.join(SCENARIOS_SHP_DIR, 'adriatico.shp'),
         'pressure':        'plastic',
         'pnum':            100000,
@@ -57,6 +61,8 @@ SCENARIOS = {
     'adriatico_oil_2024': {
         'label_it':        'Adriatico – Petrolio 2024',
         'label_en':        'Adriatic Sea – Oil 2024',
+        'area_it':         'Mar Adriatico',
+        'area_en':         'Adriatic Sea',
         'shapefile':       os.path.join(SCENARIOS_SHP_DIR, 'adriatico.shp'),
         'pressure':        'oil',
         'pnum':            100000,
@@ -67,6 +73,94 @@ SCENARIOS = {
         'nc_filename':     'adriatico_oil_20240101_365d.nc',
     },
 }
+
+# ── Tools4MSP dynamic scenarios ───────────────────────────────────────────────
+
+T4MSP_AREAS_URL = 'https://api.tools4msp.eu/api/v2/domainareas/?format=json'
+T4MSP_AREA_URL  = 'https://api.tools4msp.eu/api/v2/domainareas/{area_id}/?format=json'
+
+T4MSP_DEFAULT_PARAMS = {
+    'pnum':            100000,
+    'duration_days':   365,
+    'time_step_hours': 24,
+    'start_time':      '2024-01-01T00:00:00',
+    'res':             0.05,
+}
+
+_T4MSP_CACHE: dict = {'areas': None, 'ts': 0.0}
+_T4MSP_CACHE_TTL   = 3600  # seconds TODO
+
+
+def _fetch_t4msp_areas() -> list:
+    """Ritorna la lista {id, label} dall'API Tools4MSP con cache in memoria di 1 ora."""
+    import time as _t, urllib.request as _u
+    now = _t.time()
+    if _T4MSP_CACHE['areas'] is not None and (now - _T4MSP_CACHE['ts']) < _T4MSP_CACHE_TTL:
+        return _T4MSP_CACHE['areas']
+    try:
+        with _u.urlopen(T4MSP_AREAS_URL, timeout=15) as resp:
+            areas = json.loads(resp.read())
+        _T4MSP_CACHE['areas'] = areas
+        _T4MSP_CACHE['ts']    = now
+    except Exception as e:
+        import logging
+        logging.getLogger('pmar_process').warning(f'[T4MSP] Impossibile caricare aree: {e}')
+        if _T4MSP_CACHE['areas'] is None:
+            return []
+    return _T4MSP_CACHE['areas']
+
+
+def ensure_t4msp_shapefile(area_id: int) -> str:
+    """Scarica e salva la geometria T4MSP per area_id se non già presente. Ritorna il path .shp.
+
+    La geometria viene semplificata a ~0.01° di tolleranza prima del salvataggio:
+    per il seeding OpenDrift non serve precisione costiera (OpenDrift usa la propria
+    coastline per lo stranding), e semplificare riduce i vertici da migliaia a ~decine,
+    abbattendo il costo del point-in-polygon test durante seed_from_shapefile.
+    """
+    import urllib.request as _u
+    from shapely.geometry import shape
+    _log = logging.getLogger('pmar_process')
+    shp_path = os.path.join(SCENARIOS_SHP_DIR, f't4msp_{area_id}.shp')
+    if os.path.exists(shp_path):
+        return shp_path
+    url = T4MSP_AREA_URL.format(area_id=area_id)
+    _log.info(f'[T4MSP] Download geometria area {area_id}')
+    with _u.urlopen(url, timeout=30) as resp:
+        data = json.loads(resp.read())
+    geom = shape(data['geo'])
+    n_before = sum(len(p.exterior.coords) for p in (geom.geoms if geom.geom_type == 'MultiPolygon' else [geom]))
+    geom = geom.simplify(0.01, preserve_topology=True)
+    n_after  = sum(len(p.exterior.coords) for p in (geom.geoms if geom.geom_type == 'MultiPolygon' else [geom]))
+    _log.info(f'[T4MSP] Geometria semplificata: {n_before} → {n_after} vertici (tol=0.01°)')
+    gdf = gpd.GeoDataFrame({'label': [data['label']]}, geometry=[geom], crs='EPSG:4326')
+    gdf.to_file(shp_path)
+    _log.info(f'[T4MSP] Shapefile salvato: {shp_path}')
+    return shp_path
+
+
+def get_t4msp_scenarios() -> dict:
+    """Ritorna un dict scenario_id → config per tutte le aree T4MSP × tipi di pressione."""
+    areas  = _fetch_t4msp_areas()
+    result = {}
+    for area in areas:
+        area_id    = area['id']
+        area_label = area['label']
+        for pressure, pm in PRESSURE_MODELS.items():
+            sid = f't4msp_{area_id}_{pressure}'
+            result[sid] = {
+                **T4MSP_DEFAULT_PARAMS,
+                'pressure':        pressure,
+                'label_it':        f'{area_label} – {pm["label_it"]} 2024',
+                'label_en':        f'{area_label} – {pm["label_en"]} 2024',
+                'area_it':         area_label,
+                'area_en':         area_label,
+                'nc_filename':     f't4msp_{area_id}_{pressure}_20240101_365d.nc',
+                't4msp_area_id':   area_id,
+                'source':          't4msp',
+            }
+    return result
+
 
 from processes.logging_utils import setup_logger
 logger = setup_logger('pmar_process', 'pmar', 'pmar.log')
@@ -151,8 +245,20 @@ PROCESS_METADATA = {
         },
         'use_source': {
             'title': 'Anthropogenic use layer',
-            'description': '"none" (default), "windfarms" or "offshore_installations" (EMODnet Human Activities).',
+            'description': '"none" (default), "windfarms", "offshore_installations" or "geotiff".',
             'schema': {'type': 'string', 'default': 'none'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'geotiff_b64': {
+            'title': 'Source layer GeoTIFF (base64)',
+            'description': 'Base64-encoded GeoTIFF used as weight raster when use_source="geotiff".',
+            'schema': {'type': 'string'},
+            'minOccurs': 0, 'maxOccurs': 1,
+        },
+        'geotiff_url': {
+            'title': 'Source layer GeoTIFF (URL)',
+            'description': 'URL of a GeoTIFF to download and use as weight raster when use_source="geotiff". Ignored if geotiff_b64 is also provided.',
+            'schema': {'type': 'string'},
             'minOccurs': 0, 'maxOccurs': 1,
         },
         'scenario_id': {
@@ -186,28 +292,39 @@ class PMARProcessor(BaseProcessor):
         os.environ.pop('PROJ_LIB', None)
         os.environ.pop('PROJ_DATA', None)
 
-        scenario_id = data.get('scenario_id')
-        use_source  = data.get('use_source', 'none')
+        scenario_id  = data.get('scenario_id')
+        use_source   = data.get('use_source', 'none')
+        geotiff_b64  = data.get('geotiff_b64')
+        geotiff_url  = data.get('geotiff_url')
 
         with tempfile.TemporaryDirectory() as tmpdir:
 
             # ── Scenario mode: usa traiettorie pre-calcolate ──────────────
             if scenario_id:
-                if scenario_id not in SCENARIOS:
+                if scenario_id in SCENARIOS:
+                    sc       = SCENARIOS[scenario_id]
+                    shp_path = sc['shapefile']
+                elif scenario_id.startswith('t4msp_'):
+                    t4msp_sc = get_t4msp_scenarios()
+                    if scenario_id not in t4msp_sc:
+                        raise ProcessorExecuteError(f'Scenario T4MSP sconosciuto: {scenario_id!r}')
+                    sc       = t4msp_sc[scenario_id]
+                    shp_path = ensure_t4msp_shapefile(sc['t4msp_area_id'])
+                else:
                     raise ProcessorExecuteError(f'Scenario sconosciuto: {scenario_id!r}')
-                sc        = SCENARIOS[scenario_id]
+
                 nc_output = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
                 if not os.path.exists(nc_output):
                     raise ProcessorExecuteError(
                         f'Scenario "{scenario_id}" non ancora pre-calcolato. '
-                        f'Esegui prima: python processes/precompute_scenarios.py'
+                        f'Esegui prima precompute_scenarios.py oppure clicca Calcola nel pannello.'
                     )
                 pressure   = sc['pressure']
                 res        = float(data.get('res', sc['res']))
                 start_time = datetime.fromisoformat(sc['start_time'])
                 end_time   = start_time + timedelta(days=sc['duration_days'])
                 pnum       = sc['pnum']
-                gdf        = gpd.read_file(sc['shapefile']).to_crs('EPSG:4326')
+                gdf        = gpd.read_file(shp_path).to_crs('EPSG:4326')
                 bounds     = gdf.total_bounds
                 logger.info(
                     f'Scenario: id={scenario_id}, use_source={use_source}, '
@@ -353,6 +470,30 @@ class PMARProcessor(BaseProcessor):
                     else:
                         logger.warning("Nessun impianto offshore trovato nell'area di studio")
 
+                elif use_source == 'geotiff':
+                    if not geotiff_b64 and geotiff_url:
+                        import urllib.request
+                        logger.info(f'Download GeoTIFF da URL: {geotiff_url}')
+                        try:
+                            with urllib.request.urlopen(geotiff_url, timeout=60) as resp:
+                                geotiff_b64 = base64.b64encode(resp.read()).decode('utf-8')
+                        except Exception as e:
+                            raise ProcessorExecuteError(
+                                f'Impossibile scaricare il GeoTIFF dall\'URL: {e}'
+                            )
+                    if not geotiff_b64:
+                        raise ProcessorExecuteError(
+                            'use_source="geotiff" richiede geotiff_b64 oppure geotiff_url.'
+                        )
+                    logger.info('Caricamento GeoTIFF come layer sorgente...')
+                    use_raster = _geotiff_to_use_raster(geotiff_b64, p.grid)
+                    if float(use_raster.max()) > 0:
+                        use_weighted = True
+                        logger.info('GeoTIFF raster pronto come layer sorgente')
+                    else:
+                        logger.warning('GeoTIFF non ha valori positivi nell\'area di seeding, ignoro i pesi')
+                        use_raster = None
+
                 if use_weighted:
                     p.set_weights(res=res, study_area=study_area, use=use_raster, normalize=True)
 
@@ -365,6 +506,10 @@ class PMARProcessor(BaseProcessor):
                 )
 
                 map_bounds, colorbar_b64, vmin, vmax = _raster_to_png(h)
+                if map_bounds is None:
+                    raise ProcessorExecuteError(
+                        'Nessuna particella ha attraversato le aree selezionate.'
+                    )
                 geotiff_b64 = _histogram_to_geotiff(h)
 
                 x_vals    = h.coords['x'].values
@@ -648,6 +793,53 @@ def _fetch_offshore_installations(study_area, cache_dir):
         pickle.dump(gdf, f)
 
     return gdf
+
+
+def _geotiff_to_use_raster(geotiff_b64, grid):
+    """Reproject and resample a base64-encoded GeoTIFF onto the PMAR grid.
+
+    Values outside the GeoTIFF extent are 0. Nodata and NaN are mapped to 0.
+    Negative values are clipped to 0.
+    """
+    import rasterio
+    from rasterio.warp import reproject, Resampling
+    from rasterio.transform import from_bounds
+    import xarray as xr
+
+    tif_bytes = base64.b64decode(geotiff_b64)
+
+    x_vals = grid.coords['x_c'].values
+    y_vals = grid.coords['y_c'].values
+    nx, ny = len(x_vals), len(y_vals)
+    dx = float(x_vals[1] - x_vals[0]) if nx > 1 else 0.1
+    dy = float(y_vals[1] - y_vals[0]) if ny > 1 else 0.1
+    west  = float(x_vals.min()) - dx / 2
+    east  = float(x_vals.max()) + dx / 2
+    south = float(y_vals.min()) - dy / 2
+    north = float(y_vals.max()) + dy / 2
+
+    dst_transform = from_bounds(west, south, east, north, nx, ny)
+    dst_arr = np.zeros((ny, nx), dtype=np.float32)
+
+    with rasterio.open(io.BytesIO(tif_bytes)) as src:
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=dst_arr,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs='EPSG:4326',
+            resampling=Resampling.bilinear,
+            src_nodata=src.nodata,
+            dst_nodata=0.0,
+        )
+
+    dst_arr = np.where(np.isfinite(dst_arr), dst_arr, 0.0)
+    dst_arr = np.clip(dst_arr, 0, None)
+
+    # rasterio è north-up (riga 0 = nord); PMAR vuole y crescente verso nord → flipud
+    arr = np.flipud(dst_arr)
+    return xr.DataArray(arr, coords={'y': y_vals, 'x': x_vals}, dims=['y', 'x'])
 
 
 def _gdf_to_use_raster(gdf, grid):

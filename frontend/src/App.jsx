@@ -466,6 +466,7 @@ export default function App() {
   const [pmarLoading,     setPmarLoading]     = useState(false)
   const [pmarStatus,      setPmarStatus]      = useState('')
   const [pmarStatusType,  setPmarStatusType]  = useState('')
+  const [pmarErrorMsg,    setPmarErrorMsg]    = useState(null)
   const [showPmarRaster,  setShowPmarRaster]  = useState(true)
   const [showWindFarms,   setShowWindFarms]   = useState(true)
 
@@ -647,11 +648,14 @@ export default function App() {
   }
 
   // ── PMAR run ───────────────────────────────────────────────────────────────
-  async function handleRunPmar({ scenario_id, pressure, start_time, duration_days, pnum, res, time_step_hours, shapefile_b64 }) {
+  async function handleRunPmar({ scenario_id, pressure, start_time, duration_days, pnum, res, time_step_hours, shapefile_b64, geotiff_b64, geotiff_url }) {
     let inputs
 
     if (scenario_id) {
-      inputs = { scenario_id, use_source: useSource, res }
+      inputs = { scenario_id, use_source: useSource, res,
+        ...(useSource === 'geotiff' && geotiff_b64  ? { geotiff_b64 }  : {}),
+        ...(useSource === 'geotiff' && geotiff_url  ? { geotiff_url }  : {}),
+      }
     } else {
       const geojson = shapefile_b64 ? null : seedShapeToGeoJSON(seedShape)
       if (!geojson && !shapefile_b64) {
@@ -669,6 +673,8 @@ export default function App() {
         time_step_hours,
         ...(geojson       ? { geojson: JSON.stringify(geojson) } : {}),
         ...(shapefile_b64 ? { shapefile_b64 }                    : {}),
+        ...(useSource === 'geotiff' && geotiff_b64  ? { geotiff_b64 }  : {}),
+        ...(useSource === 'geotiff' && geotiff_url  ? { geotiff_url }  : {}),
       }
     }
 
@@ -706,7 +712,13 @@ export default function App() {
       setPmarStatusType('ok')
 
     } catch (err) {
-      setPmarStatus(t.status.error(err.message))
+      const clean = err.message
+        .replace(/^Error executing process:\s*/i, '')
+        .replace(/^Errore:\s*/i, '')
+        .replace(/^Error:\s*/i, '')
+        .trim()
+      setPmarErrorMsg(clean)
+      setPmarStatus('')
       setPmarStatusType('error')
     } finally {
       setPmarLoading(false)
@@ -803,6 +815,16 @@ export default function App() {
           onDownloadPmar={handleDownloadPmar}
           elevated={!!simData}
         />
+      )}
+
+      {pmarErrorMsg && (
+        <div className="pmar-error-backdrop" onClick={() => setPmarErrorMsg(null)}>
+          <div className="pmar-error-modal" onClick={e => e.stopPropagation()}>
+            <div className="pmar-error-icon">⚠</div>
+            <p className="pmar-error-text">{pmarErrorMsg}</p>
+            <button className="pmar-error-btn" onClick={() => setPmarErrorMsg(null)}>OK</button>
+          </div>
+        </div>
       )}
 
       {simData && (

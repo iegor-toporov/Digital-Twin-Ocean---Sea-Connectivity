@@ -61,4 +61,61 @@
   font-size: 10px;
 }
 
+/* ── PMAR error modal ──────────────────────────────────────────────────────── */
+.pmar-error-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pmar-error-modal {
+  background: rgba(15, 23, 42, 0.97);
+  border: 1px solid rgba(139, 92, 246, 0.45);
+  border-radius: 14px;
+  padding: 28px 32px 24px;
+  max-width: 340px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(139,92,246,0.1);
+  text-align: center;
+}
+
+.pmar-error-icon {
+  font-size: 32px;
+  line-height: 1;
+  color: #f59e0b;
+}
+
+.pmar-error-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #e2e8f0;
+}
+
+.pmar-error-btn {
+  margin-top: 4px;
+  padding: 7px 28px;
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  border-radius: 8px;
+  color: #c4b5fd;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pmar-error-btn:hover {
+  background: rgba(139, 92, 246, 0.35);
+  border-color: rgba(139, 92, 246, 0.8);
+}
 
