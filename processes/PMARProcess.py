@@ -362,8 +362,9 @@ class PMARProcessor(BaseProcessor):
             pm = PRESSURE_MODELS[pressure]
             try:
                 pmar_basedir = os.path.join(tmpdir, 'pmar_out')
-                p = PMAR(context=None, pressure=pressure, basedir=pmar_basedir, loglevel=50)
-                p.ds = xr.open_dataset(nc_output)
+                # spatial_domain=None: non caricare reader CMEMS (usiamo import_trajectories)
+                p = PMAR(spatial_domain=None, pressure=pressure, basedir=pmar_basedir, loglevel=50)
+                p.import_trajectories(nc_output)
 
                 study_area = [
                     float(bounds[0]) - margin, float(bounds[1]) - margin,
@@ -443,6 +444,16 @@ class PMARProcessor(BaseProcessor):
                     block_size=len(p.ds.time),
                 )
 
+                # Indicatori aggregati nel tempo (SUM, MAX, Q90)
+                indicator_sum = indicator_max = indicator_q90 = None
+                try:
+                    p.get_indicators(res=res, study_area=study_area)
+                    indicator_sum = p.output.get('SUM')
+                    indicator_max = p.output.get('MAX')
+                    indicator_q90 = p.output.get('Q90')
+                except Exception as _ind_err:
+                    logger.warning(f'get_indicators fallito (non bloccante): {_ind_err}')
+
                 map_bounds, colorbar_b64, vmin, vmax = _raster_to_png(h)
                 if map_bounds is None:
                     raise ProcessorExecuteError(
@@ -493,6 +504,21 @@ class PMARProcessor(BaseProcessor):
                     elif use_source == 'offshore_installations':
                         result['offshore_geojson'] = use_geojson
 
+                # Serializza indicatori aggiuntivi (SUM / MAX / Q90)
+                for key, da in [('sum', indicator_sum), ('max', indicator_max), ('q90', indicator_q90)]:
+                    if da is not None:
+                        ind = _serialize_indicator(da, res)
+                        if ind:
+                            result[f'{key}_raster_values']  = ind['raster_values']
+                            result[f'{key}_raster_lon_min'] = ind['raster_lon_min']
+                            result[f'{key}_raster_lat_min'] = ind['raster_lat_min']
+                            result[f'{key}_raster_res']     = ind['raster_res']
+                            result[f'{key}_raster_nx']      = ind['raster_nx']
+                            result[f'{key}_raster_ny']      = ind['raster_ny']
+                            result[f'{key}_colorbar_b64']   = ind['colorbar_b64']
+                            result[f'{key}_vmin']           = ind['vmin']
+                            result[f'{key}_vmax']           = ind['vmax']
+
                 return 'application/json', result
 
             except ValueError as e:
@@ -507,6 +533,37 @@ class PMARProcessor(BaseProcessor):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _serialize_indicator(da, res):
+    """Converte un DataArray indicatore (SUM/MAX/Q90) nel formato dizionario della risposta."""
+    # reproject_match produce coordinate con nomi come x_c/y_c; normalizziamo a x/y
+    rename = {}
+    for src, dst in [('x_c', 'x'), ('y_c', 'y'), ('lon', 'x'), ('lat', 'y'),
+                     ('longitude', 'x'), ('latitude', 'y')]:
+        if src in da.coords and dst not in da.dims:
+            rename[src] = dst
+    if rename:
+        da = da.rename(rename)
+    if 'x' not in da.coords or 'y' not in da.coords:
+        return None
+    map_bounds, colorbar_b64, vmin, vmax = _raster_to_png(da)
+    if map_bounds is None:
+        return None
+    x_vals = da.coords['x'].values
+    y_vals = da.coords['y'].values
+    arr_clean = np.where(np.isfinite(da.values) & (da.values > 0), da.values, 0.0)
+    return {
+        'raster_values':  np.round(arr_clean, 3).tolist(),
+        'raster_lon_min': float(x_vals.min()),
+        'raster_lat_min': float(y_vals.min()),
+        'raster_res':     float(res),
+        'raster_nx':      int(len(x_vals)),
+        'raster_ny':      int(len(y_vals)),
+        'colorbar_b64':   colorbar_b64,
+        'vmin':           float(vmin),
+        'vmax':           float(vmax),
+    }
+
 
 def _resolve_shapefile(geojson_input, shapefile_b64, tmpdir):
     """Return path to a local .shp from either GeoJSON string/dict or base64 ZIP."""

@@ -294,7 +294,7 @@ function SeedingAreaLayer({ geojson, visible }) {
 }
 
 // ── PMAR raster overlay (canvas layer con hover per cella) ───────────────────
-function PmarLayer({ pmarData, visible, passagesLabel }) {
+function PmarLayer({ pmarData, visible, passagesLabel, fitToData = true }) {
   const map          = useMap()
   const canvasRef    = useRef(null)
   const tooltipRef   = useRef(null)
@@ -388,7 +388,7 @@ function PmarLayer({ pmarData, visible, passagesLabel }) {
     map.on('moveend zoomend resize', draw)
     map.on('mousemove', onMouseMove)
     map.on('mouseout',  () => { tooltip.style.display = 'none' })
-    map.fitBounds(L.latLngBounds(pmarData.bounds), { padding: [50, 50] })
+    if (fitToData) map.fitBounds(L.latLngBounds(pmarData.bounds), { padding: [50, 50] })
     draw()
 
     return () => {
@@ -495,6 +495,14 @@ export default function App() {
   const [pmarErrorMsg,    setPmarErrorMsg]    = useState(null)
   const [showPmarRaster,  setShowPmarRaster]  = useState(true)
   const [showWindFarms,   setShowWindFarms]   = useState(true)
+
+  // PMAR indicator layers (SUM / MAX / Q90)
+  const [sumData,   setSumData]   = useState(null)
+  const [maxData,   setMaxData]   = useState(null)
+  const [q90Data,   setQ90Data]   = useState(null)
+  const [showSum,   setShowSum]   = useState(false)
+  const [showMax,   setShowMax]   = useState(false)
+  const [showQ90,   setShowQ90]   = useState(false)
 
   // Use-layer state (lifted from PmarPanel)
   const [useSource,        setUseSource]        = useState('none')
@@ -706,6 +714,12 @@ export default function App() {
 
     setPmarLoading(true)
     setPmarData(null)
+    setSumData(null)
+    setMaxData(null)
+    setQ90Data(null)
+    setShowSum(false)
+    setShowMax(false)
+    setShowQ90(false)
     setPmarStatus(t.pmar.btnRunning.replace('⏳ ', '').replace('…', '…'))
     setPmarStatusType('')
 
@@ -734,6 +748,27 @@ export default function App() {
 
       const label = lang === 'it' ? data.label_it : data.label_en
       setPmarData(data)
+
+      // Popola layer indicatori se presenti nella risposta
+      const mkLayer = prefix => {
+        if (!data[`${prefix}_raster_values`]) return null
+        return {
+          raster_values:  data[`${prefix}_raster_values`],
+          raster_lon_min: data[`${prefix}_raster_lon_min`],
+          raster_lat_min: data[`${prefix}_raster_lat_min`],
+          raster_res:     data[`${prefix}_raster_res`],
+          raster_nx:      data[`${prefix}_raster_nx`],
+          raster_ny:      data[`${prefix}_raster_ny`],
+          colorbar_b64:   data[`${prefix}_colorbar_b64`],
+          vmin:           data[`${prefix}_vmin`],
+          vmax:           data[`${prefix}_vmax`],
+          bounds:         data.bounds,
+        }
+      }
+      setSumData(mkLayer('sum'))
+      setMaxData(mkLayer('max'))
+      setQ90Data(mkLayer('q90'))
+
       setPmarStatus(`✓ PMAR — ${label}`)
       setPmarStatusType('ok')
 
@@ -784,6 +819,9 @@ export default function App() {
         />
         <SimLayer simData={simData} currentStep={currentStep} />
         <PmarLayer pmarData={pmarData} visible={showPmarRaster} passagesLabel={t.pmarControls.tooltipPassages} />
+        <PmarLayer pmarData={sumData} visible={showSum} passagesLabel="SUM" fitToData={false} />
+        <PmarLayer pmarData={maxData} visible={showMax} passagesLabel="MAX" fitToData={false} />
+        <PmarLayer pmarData={q90Data} visible={showQ90} passagesLabel="Q90" fitToData={false} />
         <SeedingAreaLayer geojson={pmarData?.seeding_geojson ?? null} visible={showSeedShape} />
         <WindFarmsLayer geojson={windfarmsGeoJSON} visible={showWindFarms} />
         <OffshoreInstallationsLayer geojson={offshoreGeoJSON} visible={showOffshoreInstallations} />
@@ -828,16 +866,32 @@ export default function App() {
         offshoreEmpty={offshoreEmpty}
       />
 
-      {pmarData?.colorbar_b64 && showPmarRaster && (
-        <div className="pmar-colorbar">
-          <span className="pmar-colorbar-label">{t.pmarControls.colorbarLabel}</span>
-          <img
-            src={`data:image/png;base64,${pmarData.colorbar_b64}`}
-            alt="colorbar"
-            className="pmar-colorbar-img"
-          />
-        </div>
-      )}
+      <div className="pmar-colorbar-stack">
+        {pmarData?.colorbar_b64 && showPmarRaster && (
+          <div className="pmar-colorbar">
+            <span className="pmar-colorbar-label">{t.pmarControls.colorbarLabel}</span>
+            <img src={`data:image/png;base64,${pmarData.colorbar_b64}`} alt="colorbar" className="pmar-colorbar-img" />
+          </div>
+        )}
+        {sumData?.colorbar_b64 && showSum && (
+          <div className="pmar-colorbar">
+            <span className="pmar-colorbar-label">SUM</span>
+            <img src={`data:image/png;base64,${sumData.colorbar_b64}`} alt="colorbar SUM" className="pmar-colorbar-img" />
+          </div>
+        )}
+        {maxData?.colorbar_b64 && showMax && (
+          <div className="pmar-colorbar">
+            <span className="pmar-colorbar-label">MAX</span>
+            <img src={`data:image/png;base64,${maxData.colorbar_b64}`} alt="colorbar MAX" className="pmar-colorbar-img" />
+          </div>
+        )}
+        {q90Data?.colorbar_b64 && showQ90 && (
+          <div className="pmar-colorbar">
+            <span className="pmar-colorbar-label">Q90</span>
+            <img src={`data:image/png;base64,${q90Data.colorbar_b64}`} alt="colorbar Q90" className="pmar-colorbar-img" />
+          </div>
+        )}
+      </div>
 
       {pmarData && (
         <PmarControls
@@ -851,6 +905,15 @@ export default function App() {
           showOffshoreInstallations={showOffshoreInstallations}
           onToggleOffshoreInstallations={() => setShowOffshoreInstallations(v => !v)}
           hasOffshoreInstallations={!!offshoreGeoJSON}
+          sumData={sumData}
+          showSum={showSum}
+          onToggleSum={() => setShowSum(v => !v)}
+          maxData={maxData}
+          showMax={showMax}
+          onToggleMax={() => setShowMax(v => !v)}
+          q90Data={q90Data}
+          showQ90={showQ90}
+          onToggleQ90={() => setShowQ90(v => !v)}
           onDownloadPmar={handleDownloadPmar}
           elevated={!!simData}
         />

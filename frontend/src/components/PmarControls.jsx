@@ -12,6 +12,15 @@ export default function PmarControls({
   showOffshoreInstallations,
   onToggleOffshoreInstallations,
   hasOffshoreInstallations,
+  sumData,
+  showSum,
+  onToggleSum,
+  maxData,
+  showMax,
+  onToggleMax,
+  q90Data,
+  showQ90,
+  onToggleQ90,
   onDownloadPmar,
   elevated,
 }) {
@@ -55,6 +64,36 @@ export default function PmarControls({
           title={showOffshoreInstallations ? c.hideOffshore : c.showOffshore}
         >
           🛢️ {showOffshoreInstallations ? c.hideOffshore : c.showOffshore}
+        </button>
+      )}
+
+      {sumData && (
+        <button
+          className={`pmar-toggle-btn${showSum ? ' active' : ''}`}
+          onClick={onToggleSum}
+          title={showSum ? c.hideSum : c.showSum}
+        >
+          Σ {showSum ? c.hideSum : c.showSum}
+        </button>
+      )}
+
+      {maxData && (
+        <button
+          className={`pmar-toggle-btn${showMax ? ' active' : ''}`}
+          onClick={onToggleMax}
+          title={showMax ? c.hideMax : c.showMax}
+        >
+          ↑ {showMax ? c.hideMax : c.showMax}
+        </button>
+      )}
+
+      {q90Data && (
+        <button
+          className={`pmar-toggle-btn${showQ90 ? ' active' : ''}`}
+          onClick={onToggleQ90}
+          title={showQ90 ? c.hideQ90 : c.showQ90}
+        >
+          Q {showQ90 ? c.hideQ90 : c.showQ90}
         </button>
       )}
 

@@ -3,6 +3,8 @@ import glob
 import io
 import json
 import os
+import shutil
+import tempfile
 import uuid
 import time as _time
 import threading
@@ -17,7 +19,6 @@ from processes.PMARProcess import (
     SCENARIOS_DIR, SCENARIOS_SHP_DIR, PRESSURE_MODELS,
     ensure_t4msp_shapefile, _fetch_t4msp_areas,
 )
-from processes.OpenDriftProcess import _get_forcing_file, _get_wind_file, _build_model, OUT_DIR
 from processes.logging_utils import setup_logger
 
 logger = setup_logger('precompute_process', 'pmar', 'precompute_process.log')
@@ -99,12 +100,6 @@ PROCESS_METADATA = {
             'schema': {'type': 'string'},
             'minOccurs': 0, 'maxOccurs': 1,
         },
-        'cmems_margin': {
-            'title': 'CMEMS download margin (degrees)',
-            'description': 'Degrees added around the seeding area centre for CMEMS data download. Default: 5.0.',
-            'schema': {'type': 'number', 'default': 5.0},
-            'minOccurs': 0, 'maxOccurs': 1,
-        },
     },
     'outputs': {
         'result': {
@@ -113,6 +108,19 @@ PROCESS_METADATA = {
         }
     },
 }
+
+
+def _detect_spatial_domain(lon_min, lat_min, lon_max, lat_max):
+    """Sceglie il dominio PMAR (stringa per get_copernicus) in base al centroide della bbox."""
+    cx = (lon_min + lon_max) / 2
+    cy = (lat_min + lat_max) / 2
+    if -6 <= cx <= 36.29 and 30.19 <= cy <= 45.98:
+        return 'med'
+    if 27.25 <= cx <= 42 and 40.5 <= cy <= 47:
+        return 'black sea'
+    if 9.04 <= cx <= 30.21 and 53.01 <= cy <= 65.89:
+        return 'baltic'
+    return 'global'
 
 
 def _save_custom_shapefile(geojson_input, shapefile_b64, dest_dir, custom_id):
@@ -173,8 +181,6 @@ def _build_custom_scenario(data, shp_path=None, area_label=None):
     if shp_path is None:
         shp_path = _save_custom_shapefile(geojson_input, shapefile_b64, SCENARIOS_SHP_DIR, custom_id)
 
-    cmems_margin = float(data.get('cmems_margin', 5.0))
-    cmems_margin = max(0.0, min(cmems_margin, 20.0))
     description  = (data.get('description') or '').strip()
 
     sc = {
@@ -189,7 +195,6 @@ def _build_custom_scenario(data, shp_path=None, area_label=None):
         'time_step_hours': time_step_hours,
         'start_time':      start_time_str,
         'res':             res,
-        'cmems_margin':    cmems_margin,
         'description':     description,
         'nc_filename':     f'{custom_id}.nc',
         'shapefile':       shp_path,
@@ -204,103 +209,96 @@ def _build_custom_scenario(data, shp_path=None, area_label=None):
 
 
 def _run_scenario(scenario_id, sc, shp_path):
-    nc_output = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
+    from pmar.pmar import PMAR
 
+    nc_output = os.path.join(SCENARIOS_DIR, sc['nc_filename'])
     if os.path.exists(nc_output):
         logger.info(f'[{scenario_id}] NC già presente, salto.')
         return
 
     logger.info(f'[{scenario_id}] Avvio pre-calcolo: {sc["label_en"]}')
 
+    gdf    = gpd.read_file(shp_path).to_crs('EPSG:4326')
+    bounds = gdf.total_bounds  # [lon_min, lat_min, lon_max, lat_max]
+    domain = _detect_spatial_domain(bounds[0], bounds[1], bounds[2], bounds[3])
+
     start_time      = datetime.fromisoformat(sc['start_time'])
-    end_time        = start_time + timedelta(days=sc['duration_days'])
     pressure        = sc['pressure']
     pnum            = sc['pnum']
     duration_days   = sc['duration_days']
     time_step_hours = sc['time_step_hours']
-    cmems_margin    = float(sc.get('cmems_margin', 5.0))
 
-    gdf    = gpd.read_file(shp_path).to_crs('EPSG:4326')
-    bounds = gdf.total_bounds
-
-    logger.info(f'[{scenario_id}] bounds={bounds.tolist()}, cmems_margin={cmems_margin}°')
-
-    pm_cfg = PRESSURE_MODELS[pressure]
-    forcing_paths = [_get_forcing_file(
-        bounds[0], bounds[2], bounds[1], bounds[3],
-        start_time, end_time, time_step_hours, pm_cfg.get('max_depth', 0.5), cmems_margin,
-    )]
-    if pm_cfg['needs_wind']:
-        wind_path = _get_wind_file(bounds[0], bounds[2], bounds[1], bounds[3], start_time, end_time, cmems_margin)
-        if wind_path:
-            forcing_paths.append(wind_path)
-        else:
-            logger.warning(f'[{scenario_id}] Vento non disponibile, solo correnti')
-
-    logger.info(f'[{scenario_id}] Forcing files: {forcing_paths}')
+    logger.info(f'[{scenario_id}] spatial_domain={domain!r}, bounds={bounds.tolist()}')
+    logger.info(f'[{scenario_id}] pressure={pressure}, pnum={pnum}, duration={duration_days}d, time_step={time_step_hours}h')
 
     os.environ.pop('PROJ_LIB', None)
     os.environ.pop('PROJ_DATA', None)
 
-    o = _build_model(pm_cfg['class'], pm_cfg)
-    o.set_config('general:coastline_action', 'stranding')
-    o.add_readers_from_list(forcing_paths)
+    p_holder      = [None]  # container mutabile condiviso col thread di monitoraggio
+    stop_progress = threading.Event()
+    t0            = _time.monotonic()
 
-    tmp_nc = os.path.join(OUT_DIR, f'precompute_{uuid.uuid4().hex}.nc')
+    def _log_progress():
+        # Fase 1: aspetta che PMAR crei p.o (il modello OpenDrift) internamente
+        while not stop_progress.wait(1):
+            p = p_holder[0]
+            if p is not None and getattr(p, 'o', None) is not None:
+                break
+        if stop_progress.is_set():
+            return
+        # Fase 2: log ogni 30 secondi
+        while not stop_progress.wait(30):
+            try:
+                p        = p_holder[0]
+                o        = p.o
+                sim_time = getattr(o, 'time', None)
+                start_dt = getattr(o, 'start_time', None)
+                if sim_time is None or start_dt is None:
+                    continue
+                active  = o.num_elements_active()
+                elapsed = (_time.monotonic() - t0) / 60
+                sim_day = (sim_time - start_dt).total_seconds() / 86400
+                pct     = min(sim_day / duration_days * 100, 100)
+                logger.info(
+                    f'[{scenario_id}] giorno {sim_day:.0f}/{duration_days} ({pct:.0f}%)'
+                    f' — {active} particelle attive — {elapsed:.1f} min'
+                )
+            except Exception:
+                pass
+
+    _progress_thread = threading.Thread(target=_log_progress, daemon=True)
+    _progress_thread.start()
+
     try:
-        o.seed_from_shapefile(shapefile=shp_path, number=pnum, time=start_time)
-        ts = timedelta(hours=time_step_hours)
-        logger.info(
-            f'[{scenario_id}] Run: model={pm_cfg["class"]}, pnum={pnum}, '
-            f'duration={duration_days}d, time_step={time_step_hours}h'
-        )
-        stop_progress = threading.Event()
-
-        def _log_progress():
-            while not stop_progress.wait(60):
-                try:
-                    sim_time    = getattr(o, 'time', None)
-                    active      = o.num_elements_active()
-                    elapsed_now = (_time.monotonic() - t0) / 60
-                    if sim_time is not None:
-                        sim_day = (sim_time - start_time).total_seconds() / 86400
-                        pct     = sim_day / duration_days * 100
-                        logger.info(
-                            f'[{scenario_id}] giorno {sim_day:.0f}/{duration_days} ({pct:.0f}%) '
-                            f'— {active} particelle attive — {elapsed_now:.1f} min'
-                        )
-                    else:
-                        logger.info(
-                            f'[{scenario_id}] inizializzazione in corso '
-                            f'— {active} particelle attive — {elapsed_now:.1f} min'
-                        )
-                except Exception:
-                    pass
-
-        t0 = _time.monotonic()
-        _progress_thread = threading.Thread(target=_log_progress, daemon=True)
-        _progress_thread.start()
-        try:
-            o.run(
-                duration=timedelta(days=duration_days),
-                time_step=ts,
-                time_step_output=ts,
-                outfile=tmp_nc,
+        with tempfile.TemporaryDirectory() as pmar_basedir:
+            p = PMAR(
+                spatial_domain=domain,
+                pressure=pressure,
+                basedir=pmar_basedir,
+                loglevel=40,
             )
-        finally:
-            stop_progress.set()
-            _progress_thread.join()
-        elapsed = (_time.monotonic() - t0) / 60
-        logger.info(f'[{scenario_id}] Simulazione completata in {elapsed:.1f} minuti')
+            p_holder[0] = p  # rende p visibile al thread di monitoraggio
+            p.get_trajectories(
+                pnum=pnum,
+                start_time=start_time.strftime('%Y-%m-%d'),
+                duration_days=duration_days,
+                seeding_shapefile=shp_path,
+                tstep=timedelta(hours=time_step_hours),
+            )
+            shutil.copy(str(p.particle_path), nc_output)
 
-        os.rename(tmp_nc, nc_output)
-        logger.info(f'[{scenario_id}] NC salvato: {nc_output}')
+        elapsed = (_time.monotonic() - t0) / 60
+        logger.info(f'[{scenario_id}] Simulazione completata in {elapsed:.1f} minuti. NC: {nc_output}')
 
     except Exception as e:
         logger.error(f'[{scenario_id}] Fallito: {e}', exc_info=True)
-        if os.path.exists(tmp_nc):
-            os.remove(tmp_nc)
+        if os.path.exists(nc_output):
+            os.remove(nc_output)
         raise
+
+    finally:
+        stop_progress.set()
+        _progress_thread.join(timeout=5)
 
 
 class PrecomputeProcessor(BaseProcessor):

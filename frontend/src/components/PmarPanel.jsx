@@ -98,7 +98,6 @@ export default function PmarPanel({
   const [customLabel,   setCustomLabel]   = useState('')
   const [customDesc,    setCustomDesc]    = useState('')
   const [seedAreaName,  setSeedAreaName]  = useState('')
-  const [cmemsMargin,   setCmemsMargin]   = useState('5')
   const [pressure,      setPressure]      = useState('generic')
   const [startDate,     setStartDate]     = useState(defaultStartDate())
   const [durationDays,  setDurationDays]  = useState('30')
@@ -187,7 +186,6 @@ export default function PmarPanel({
       ...(selectedT4mspArea  ? { t4msp_area_id: selectedT4mspArea }  : {}),
       ...(seedAreaMode === 'draw' && seedAreaName.trim()
             ? { area_name: seedAreaName.trim() } : {}),
-      cmems_margin: parseFloat(cmemsMargin) || 5.0,
       ...(customDesc.trim() ? { description: customDesc.trim() } : {}),
     }
     try {
@@ -514,12 +512,6 @@ export default function PmarPanel({
               {TIME_STEPS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
           </div>
-        </div>
-
-        <div className="form-row">
-          <label>{p.labelCmemsMargin}</label>
-          <input type="number" value={cmemsMargin} min="0" max="20" step="any"
-            onChange={e => setCmemsMargin(e.target.value)} />
         </div>
 
         <div className={ncSizeClass}>
